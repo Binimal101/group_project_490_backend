@@ -1,13 +1,21 @@
 from sqlmodel import SQLModel, Field
 from datetime import datetime, date
 
+class PaymentInformation(SQLModel, table=True):
+  __tablename__ = "payment_information"
+  id : int = Field(primary_key=True)
+  ccnum : str
+  cv : str
+  exp_date : date
+  last_updated : datetime
+
 class PricingPlan(SQLModel, table=True):
   __tablename__ = "pricing_plan"
   id : int = Field(primary_key=True)
   payment_interval : str
   payment_amount : float
   open_to_entry : bool
-  coach_id : int = Field(foreign_key="coach.id"
+  coach_id : int = Field(foreign_key="coach.id")
   last_updated : datetime
 
 class BillingCycle(SQLModel, table=True):
@@ -26,3 +34,4 @@ class Invoice(SQLModel, table=True):
   client_id : int = Field(foreign_key="client.id")
   outstanding_balance : float
   last_updated : datetime
+
