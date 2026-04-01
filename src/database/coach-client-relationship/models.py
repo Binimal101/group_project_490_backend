@@ -1,5 +1,9 @@
 from sqlmodel import SQLModel, Field
+from typing import Optional
 from datetime import datetime
+from src.database.client.models import Client
+from src.database.coach.models import Coach
+from src.database.base_accounts.models import Account
 
 class ClientCoachRequest(SQLModel, table=True):
   __tablename__ = "client_coach_request"
