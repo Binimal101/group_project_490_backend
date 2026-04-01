@@ -1,9 +1,13 @@
 from sqlmodel import SQLModel, Field
 from typing import Optional
 from datetime import datetime
+from src.database.client.models import Client
+from src.database.coach.models import Coach
+from src.database.base_accounts.models import SupaUser
+from src.database.admin.models import Admin
 
 class SupaUser(SQLModel, table=True):
-  __tablename__ = "supa-user"
+  __tablename__ = "supa_user"
   id : int = Field(primary_key=True)
   email : Optional[str]
   last_updated : datetime
