@@ -18,7 +18,7 @@ class ClientCoachRelationship(SQLModel, table=True):
   __tablename__ = "client_coach_relationship"
   id : int = Field(primary_key=True)
   request_id : int = Field(foreign_key="client_coach_request.id")
-  create_at : datetime
+  created_at : datetime
   is_active : bool
   coach_blocked : bool
   client_blocked: bool
