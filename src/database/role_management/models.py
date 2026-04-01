@@ -1,6 +1,9 @@
 from sqlmodel import SQLModel, Field
 from typing import Optional
 from datetime import datetime
+from src.database.client.models import Client
+from src.database.coach.models import Coach
+from src.database.admin.models import Admin
 
 class Roles(SQLModel, table=True):
   __tablename__ = "roles"
@@ -12,7 +15,7 @@ class RolePromotionResolution(SQLModel, table=True):
   __tablename__ = "role_promotion_resolution"
   id : int = Field(primary_key=True)
   admin_id : int = Field(foreign_key="admin.id")
-  user_id : int = Field(foreign_key="user.id")
+  client_id : int = Field(foreign_key="client.id")
   role_id : int = Field(foreign_key="roles.id")
   is_approved : bool
   last_updated : datetime
