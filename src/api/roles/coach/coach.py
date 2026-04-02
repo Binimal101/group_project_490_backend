@@ -1,9 +1,9 @@
 from fastapi import APIRouter, HTTPException, Depends
-from src.api.roles.domain import CreateCoachRequestResponse
+from src.api.roles.coach.domain import CreateCoachRequestResponse
 from src.api.dependencies import get_client_account
 
 #models
-from src.api.roles.domain import CoachDetails
+from src.api.roles.coach.domain import CoachDetails
 
 
 from src.database.session import get_session

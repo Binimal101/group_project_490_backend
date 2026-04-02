@@ -8,8 +8,8 @@ from src.api.auth.services import serialize_account
 from src.api.auth.auth import router as auth_router
 
 #Role CRUD
-from src.api.roles.coach import router as coach_router
-from src.api.roles.client import router as client_router
+from src.api.roles.coach.coach import router as coach_router
+from src.api.roles.client.client import router as client_router
 
 app = FastAPI(title="Group 6 490 Project API")
 
@@ -17,8 +17,8 @@ app.include_router(auth_router)  # includes login, signup, and token routes
 app.include_router(coach_router)
 app.include_router(client_router)
 
-@app.get("/me")  # get_current_user assumes they pass a valid jwt as bearer
-def read_current_user(user = Depends(get_account_from_bearer)):
+@app.get("/me")  # get_current_account assumes they pass a valid jwt as bearer
+def read_current_account(user = Depends(get_account_from_bearer)):
     return serialize_account(user)
 
 if __name__ == "__main__":
