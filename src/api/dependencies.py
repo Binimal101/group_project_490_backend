@@ -30,6 +30,7 @@ def authenticate_user(db: Session, email: str, password: str) -> Account | None:
 
     return user
 
+#authorization: bearer <tok> # tok == jwt
 
 def get_account_from_bearer(
     token: str = Depends(oauth2_scheme),
@@ -88,3 +89,4 @@ def get_admin_account(account: Account = Depends(get_account_from_bearer)):
         raise role_authorization_exception
     else:
         return account #account routes down to role resources
+

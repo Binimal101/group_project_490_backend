@@ -30,4 +30,9 @@ def account_roles(account: Account) -> list[str]:
     return roles
 
 def serialize_account(account: Account, roles: Optional[list[str]] = None) -> dict:
-    return account.model_dump()
+    data = account.model_dump(exclude={"hashed_password"})
+
+    if roles is not None:
+        data["roles"] = roles
+
+    return data

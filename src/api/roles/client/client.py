@@ -5,8 +5,7 @@ from src.api.dependencies import get_account_from_bearer, get_client_account
 
 #models
 from src.api.roles.client.domain import InitialSurveyInput, ClientAccountResponse, CreateClientResponse
-
-
+ 
 from src.database.session import get_session
 from src.database.account.models import Account
 from src.database.client.models import Client, ClientAvailability

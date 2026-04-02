@@ -5,6 +5,7 @@ from datetime import datetime, time
 from enum import Enum
 from src.database.base import SQLModelLU
 
+
 class Account(SQLModelLU, table=True):
   __tablename__ = "account" # type: ignore
   id: Optional[int] = Field(default=None, primary_key=True)
@@ -12,7 +13,7 @@ class Account(SQLModelLU, table=True):
   email: str
 
   # auth, ONE of these needs to be here
-  hashed_password: Optional[str] = None
+  hashed_password: Optional[str] = Field(default=None)
   gcp_user_id: Optional[str] = None
   
   # demo
@@ -28,7 +29,6 @@ class Account(SQLModelLU, table=True):
   admin_id: Optional[int] = Field(default=None, foreign_key="admin.id")
 
   created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
-
   
 class Weekday(Enum):
    MONDAY = "monday"

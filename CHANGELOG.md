@@ -10,3 +10,7 @@ Created repository with proposed layout, due to change, run with frozen flag -m:
   - fixed some models that were typed as optional, but no default value was provided; ***there may still be more***
   - added TODO's for when all of the models are correctly done
   - Final notes: Run backend with `python -m src.api.app`, src.api has and will retain all business logic for how to use data from src.database.xxxx.models, src.api.auth currently only supports email/pw login/signup, we still need to make it ambiguous for GCP OAuth, the schema currently supports it but I didn't have time today to set it up
+
+- Matt @4.2.26
+  - Finished all of the models (~20 from what was leftover)
+  - Finished & manually tested initial survey submission endpoint, coach & client /me routes, and coach request submission route

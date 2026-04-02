@@ -13,10 +13,6 @@ class SignupRequest(BaseModel):
     pfp_url: Optional[str] = None
     bio: Optional[str] = None
     gcp_user_id: Optional[str] = None
-    client_id: Optional[int] = None
-    coach_id: Optional[int] = None
-    admin_id: Optional[int] = None
-    created_at: Optional[datetime] = None
 
 
 class LoginRequest(BaseModel):
