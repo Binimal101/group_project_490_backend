@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends
 from src.api.roles.coach.domain import CreateCoachRequestResponse
-from src.api.dependencies import get_client_account
+from src.api.dependencies import get_coach_account
 
 #models
 from src.api.roles.coach.domain import CoachRequestInput, CoachAccountResponse
@@ -14,7 +14,7 @@ from src.database.role_management.models import CoachRequest
 router = APIRouter(prefix="/roles/coach", tags=["coach"])
 
 @router.post("/request_coach_creation", response_model=CreateCoachRequestResponse)
-def create_coach_request(coach_details: CoachRequestInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+def create_coach_request(coach_details: CoachRequestInput, db = Depends(get_session), acc: Account = Depends(get_coach_account)):
     """
     Creates a coach_request, and a coach record with verified=False, 
     attaches certifications, experiences, and availability
@@ -66,8 +66,8 @@ def create_coach_request(coach_details: CoachRequestInput, db = Depends(get_sess
     return CreateCoachRequestResponse(coach_request_id=cr.id, coach_id=coach.id) # type: ignore
 
 @router.post("/me", response_model=CoachAccountResponse)
-def me(db = Depends(get_session), acc: Account = Depends(get_client_account)):
+def me(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
     return CoachAccountResponse(
         base_account=acc,
-        coach_account=db.get(Coach, acc.client_id)
+        coach_account=db.get(Coach, acc.coach_id)
     )

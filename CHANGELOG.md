@@ -14,3 +14,4 @@ Created repository with proposed layout, due to change, run with frozen flag -m:
 - Matt @4.2.26
   - Finished all of the models (~20 from what was leftover)
   - Finished & manually tested initial survey submission endpoint, coach & client /me routes, and coach request submission route
+  - Began to build out full CRUD for roles (modifying certs & experiences)

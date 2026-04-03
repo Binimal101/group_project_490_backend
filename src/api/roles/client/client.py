@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from src.api.dependencies import get_account_from_bearer, get_client_account
 
 #models
-from src.api.roles.client.domain import InitialSurveyInput, ClientAccountResponse, CreateClientResponse
+from src.api.roles.client.domain import InitialSurveyInput, ClientAccountResponse, CreateClientResponse, DunderResponse, UpdateClientInfoInput
  
 from src.database.session import get_session
 from src.database.account.models import Account
@@ -62,6 +62,26 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
     db.commit()
 
     return CreateClientResponse(client_id=client.id) # type: ignore
+
+@router.post("/update_client_information", response_model=DunderResponse)
+def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Availabilities: providing availabilities will ADD availability, should REMOVE exisiting availability BEFORE calling this method if batch updating
+    Fitness goals will override current reading
+    Health metrics appends new record as client_telemetry
+    Payment information is overridden
+
+    Will merge timelines for multiple availabilities mapping to the client if new addition intersects
+    """
+    if payload.availabilities: 
+        pass
+
+    if payload.fitness_goals:
+        pass
+    if payload.health_metrics:
+        pass
+    if payload.payment_information:
+        pass
 
 @router.post("/me", response_model=ClientAccountResponse)
 def me(db = Depends(get_session), acc: Account = Depends(get_client_account)):
