@@ -8,10 +8,18 @@ dependencies = [
     "fastapi>=0.135.2",
     "google-auth>=2.49.1",
     "psycopg2>=2.9.11",
+    "pytest>=9.0.2",
     "python-dotenv>=1.2.2",
     "python-jose>=3.5.0",
     "python-multipart>=0.0.22",
     "requests>=2.33.1",
     "sqlmodel>=0.0.37",
     "uvicorn>=0.42.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+filterwarnings = [
+    "ignore:datetime.datetime.utcnow\\(\\) is deprecated:DeprecationWarning",
+    "ignore:The `dict` method is deprecated:DeprecationWarning",
 ]

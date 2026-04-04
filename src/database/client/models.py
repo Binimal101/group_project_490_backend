@@ -14,7 +14,7 @@ class ClientAvailability(SQLModelLU, table=True):
   __tablename__ = "client_availability"  # type: ignore
   id : Optional[int] = Field(default=None, primary_key=True)
 
-class FitnessGoalEnum(Enum):
+class FitnessGoalEnum(str, Enum):
   WEIGHT_LOSS = "weight loss"
   MAINTENENCE = "maintenence"
   MUSCLE_GAIN = "muscle gain"

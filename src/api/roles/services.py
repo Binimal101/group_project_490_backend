@@ -1,4 +1,4 @@
-from database.account.models import Availability
+from src.database.account.models import Availability
 from datetime import time
 
 from typing import List, Tuple

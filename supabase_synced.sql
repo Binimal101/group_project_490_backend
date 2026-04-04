@@ -49,7 +49,7 @@ CREATE TABLE "public"."role_promotion_resolution" (
     "id" bigint NOT NULL,
     "admin_id" bigint NOT NULL,
     "account_id" bigint NOT NULL,
-    "role_id" bigint NOT NULL,
+    "role" TEXT NOT NULL,
     "is_approved" boolean NOT NULL,
     "last_updated" timestamptz NOT NULL,
     CONSTRAINT "pk_role_promotion_resolution_id" PRIMARY KEY ("id")
@@ -146,13 +146,6 @@ CREATE TABLE "public"."client" (
     "last_updated" timestamptz NOT NULL,
     "client_availability_id" bigint NOT NULL,
     CONSTRAINT "pk_client_id" PRIMARY KEY ("id")
-);
-
-CREATE TABLE "public"."roles" (
-    "id" bigint NOT NULL,
-    "name" text NOT NULL,
-    "last_updated" timestamptz NOT NULL,
-    CONSTRAINT "pk_roles_id" PRIMARY KEY ("id")
 );
 
 CREATE TABLE "public"."account" (
@@ -452,7 +445,6 @@ ALTER TABLE "public"."invoice" ADD CONSTRAINT "fk_invoice_client_id_client_id" F
 ALTER TABLE "public"."pricing_plan" ADD CONSTRAINT "fk_pricing_plan_coach_id_coach_id" FOREIGN KEY("coach_id") REFERENCES "public"."coach"("id");
 ALTER TABLE "public"."billing_cycle" ADD CONSTRAINT "fk_billing_cycle_pricing_plan_id_pricing_plan_id" FOREIGN KEY("pricing_plan_id") REFERENCES "public"."pricing_plan"("id") ON DELETE CASCADE;
 ALTER TABLE "public"."role_promotion_resolution" ADD CONSTRAINT "fk_role_promotion_resolution_admin_id_admin_id" FOREIGN KEY("admin_id") REFERENCES "public"."admin"("id");
-ALTER TABLE "public"."role_promotion_resolution" ADD CONSTRAINT "fk_role_promotion_resolution_role_id_roles_id" FOREIGN KEY("role_id") REFERENCES "public"."roles"("id");
 ALTER TABLE "public"."role_promotion_resolution" ADD CONSTRAINT "fk_role_promotion_resolution_account_id_account_id" FOREIGN KEY("account_id") REFERENCES "public"."account"("id");
 ALTER TABLE "public"."workout_activity" ADD CONSTRAINT "fk_workout_activity_workout_id_workout_id" FOREIGN KEY("workout_id") REFERENCES "public"."workout"("id") ON DELETE CASCADE;
 ALTER TABLE "public"."workout_plan_activity" ADD CONSTRAINT "fk_workout_plan_activity_workout_activity_id_workout_activit" FOREIGN KEY("workout_activity_id") REFERENCES "public"."workout_activity"("id") ON DELETE CASCADE;

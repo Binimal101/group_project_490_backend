@@ -6,17 +6,19 @@ from src.database.client.models import Client
 from src.database.coach.models import Coach
 from src.database.admin.models import Admin
 
-class Roles(SQLModelLU, table=True):
-  __tablename__ = "roles"  # type: ignore
-  id : Optional[int] = Field(default=None, primary_key=True)
-  name : str
+from enum import Enum
+
+class Roles(str, Enum):
+  CLIENT = "client"
+  COACH = "coach"
+  ADMIN = "admin"
 
 class RolePromotionResolution(SQLModelLU, table=True):
   __tablename__ = "role_promotion_resolution" # type: ignore
   id : Optional[int] = Field(default=None, primary_key=True)
+  role : Roles
   admin_id : int = Field(foreign_key="admin.id")
   client_id : int = Field(foreign_key="client.id")
-  role_id : int = Field(foreign_key="roles.id")
   is_approved : bool
 
 class CoachRequest(SQLModelLU, table=True):

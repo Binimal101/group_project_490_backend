@@ -10,7 +10,7 @@ def hash_password(password: str) -> str:
     return sha256(salted).hexdigest()
 
 def create_account(payload: SignupRequest) -> Account:
-    account_data = payload.dict(exclude_none=True, exclude={"password", "roles"})
+    account_data = payload.dict(exclude_none=True, exclude={"password"})
     account_data["hashed_password"] = hash_password(payload.password)
     return Account(**account_data)
 
@@ -29,10 +29,7 @@ def account_roles(account: Account) -> list[str]:
 
     return roles
 
-def serialize_account(account: Account, roles: Optional[list[str]] = None) -> dict:
+def serialize_account(account: Account) -> dict:
     data = account.model_dump(exclude={"hashed_password"})
-
-    if roles is not None:
-        data["roles"] = roles
 
     return data

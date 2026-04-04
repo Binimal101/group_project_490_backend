@@ -75,13 +75,14 @@ def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_s
     """
     if payload.availabilities: 
         pass
-
     if payload.fitness_goals:
         pass
     if payload.health_metrics:
         pass
     if payload.payment_information:
         pass
+
+    return DunderResponse()
 
 @router.post("/me", response_model=ClientAccountResponse)
 def me(db = Depends(get_session), acc: Account = Depends(get_client_account)):
