@@ -8,8 +8,8 @@ from src.api.auth.services import serialize_account
 from src.api.auth.auth import router as auth_router
 
 #Role CRUD
-from src.api.roles.coach import router as coach_router
-from src.api.roles.client import router as client_router
+from src.api.roles.coach.coach import router as coach_router
+from src.api.roles.client.client import router as client_router
 
 app = FastAPI(title="Group 6 490 Project API")
 

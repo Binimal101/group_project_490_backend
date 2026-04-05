@@ -126,8 +126,6 @@ def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_s
     db.add(client)
     db.commit()
     
-    
-
     return DunderResponse()
 
 @router.post("/me", response_model=ClientAccountResponse)
@@ -143,30 +141,25 @@ def delete_client_profile(db = Depends(get_session), acc: Account = Depends(get_
     if client is None:
         raise HTTPException(404, detail="Client profile not found")
 
+    payment_info = None
+    if client.payment_information_id is not None:
+        payment_info = db.get(PaymentInformation, client.payment_information_id)
+
+    availability = None
+    if client.client_availability_id is not None:
+        availability = db.get(ClientAvailability, client.client_availability_id)
+
     acc.client_id = None
     db.add(acc)
 
-    if client.payment_information_id is not None:
-        payment_info = db.get(PaymentInformation, client.payment_information_id)
-        if payment_info is not None:
-            db.delete(payment_info)
-
-    if client.client_availability_id is not None:
-        availability = db.get(ClientAvailability, client.client_availability_id)
-        if availability is not None:
-            db.delete(availability)
-
-    fitness_goals = db.exec(select(FitnessGoals).where(FitnessGoals.client_id == client.id)).first()
-    if fitness_goals is not None:
-        db.delete(fitness_goals)
-
-    telemetry_rows = db.exec(
-    select(ClientTelemetry).where(ClientTelemetry.client_id == client.id)).all()
-
-    for telem in telemetry_rows:
-        db.delete(telem)
-
     db.delete(client)
+    db.flush()
+
+    if payment_info is not None:
+        db.delete(payment_info)
+
+    if availability is not None:
+        db.delete(availability)
     db.commit()
 
     return DunderResponse()
