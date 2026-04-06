@@ -1,14 +1,15 @@
 from fastapi import APIRouter, HTTPException, Depends
-from src.api.roles.coach.domain import CreateCoachRequestResponse
+from src.api.roles.coach.domain import CreateCoachRequestResponse, UpdateCoachInfoResponse, CoachRequestDeniedResponse, AcceptedClientResponse
 from src.api.dependencies import get_coach_account, get_client_account
 
 #models
-from src.api.roles.coach.domain import CoachRequestInput, CoachAccountResponse
+from src.api.roles.coach.domain import CoachRequestInput, CoachAccountResponse, DunderResponse, UpdateCoachInfoInput, ClientCoachRequestInput
 
 
+from src.database.coach_client_relationship.models import ClientCoachRequest
 from src.database.session import get_session
-from src.database.account.models import Account
-from src.database.coach.models import Coach, CoachCertifications, CoachExperience, CoachAvailability
+from src.database.account.models import Account, Availability
+from src.database.coach.models import Coach, CoachCertifications, CoachExperience, CoachAvailability, Experience, Certifications
 from src.database.role_management.models import CoachRequest
 
 router = APIRouter(prefix="/roles/coach", tags=["coach"])
@@ -65,9 +66,83 @@ def create_coach_request(coach_details: CoachRequestInput, db = Depends(get_sess
 
     return CreateCoachRequestResponse(coach_request_id=cr.id, coach_id=coach.id) # type: ignore
 
+# Updating coach request , which includes coach availability, experience, and certifications.
+@router.patch("/update_coach_info", response_model=UpdateCoachInfoResponse)
+def update_coach_request(new_coach_details: UpdateCoachInfoInput, db = Depends(get_session), coach_acc: Coach = Depends(get_coach_account)):
+    """
+    Updates coach request information, including certifications, experiences, and availability
+    Deletes existing certs, exps, and availabilities and replaces with new ones if the user provides them, otherwise leaves them as is
+    Errors when user does not have a coach_id
+    """
+    if coach_acc.id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    
+    coach_availability_id = db.query(CoachAvailability.id).filter(CoachAvailability.id == coach_acc.coach_availability).first()
+    coach_certifications_id = db.query(CoachCertifications.certification_id).filter(CoachCertifications.coach_id == coach_acc.id).all()
+    coach_experiences_id = db.query(CoachExperience.experience_id).filter(CoachExperience.coach_id == coach_acc.id).all()
+
+    if new_coach_details.availabilities is not None:
+        db.query(Availability).filter(Availability.coach_availability_id == coach_availability_id).delete(synchronize_session=False)
+        for a in new_coach_details.availabilities:
+            a.coach_availability_id = coach_availability_id # type: ignore
+            db.add(a)
+
+    if new_coach_details.certifications is not None:
+        db.query(CoachCertifications).filter(Certifications.id == coach_certifications_id).delete(synchronize_session=False)
+        for c in new_coach_details.certifications:
+            db.add(CoachCertifications(coach_id=coach.id, certification_id=c.id)) # type: ignore
+    
+    if new_coach_details.experiences is not None:
+        db.query(CoachExperience).filter(Experience.id == coach_experiences_id).delete(synchronize_session=False)
+        for e in new_coach_details.experiences:
+            db.add(CoachExperience(coach_id=coach.id, experience_id=e.id)) # type: ignore
+
+    db.flush()
+    db.commit()
+
+    return UpdateCoachInfoResponse(coach_request_id=cr.id, coach_id=coach_acc.id) # type: ignore
+
+@router.delete("/coach_request_denied", response_model=CoachRequestDeniedResponse)
+def coach_request_denied(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
+    """
+    Deletes coach request, coach record, certs, exps, and avails, and sets user account coach_id to null
+    Errors when user does not have a coach_id
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    
+    db.query(Coach).filter(Coach.id == acc.coach_id).delete(synchronize_session=False)
+
+    acc.coach_id = None
+    
+    db.commit()
+
+    return CoachRequestDeniedResponse(coach_request_id=cr.id, coach_id=acc.coach_id) # type: ignore
+
 @router.post("/me", response_model=CoachAccountResponse)
 def me(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
     return CoachAccountResponse(
         base_account=acc,
         coach_account=db.get(Coach, acc.coach_id)
     )
+
+@router.post("/accept_client_request", response_model=AcceptedClientResponse)
+def accept_client_request(request_input : ClientCoachRequestInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Accepts a client coach request, creates a client coach relationship row
+    Errors when client coach request is not found, or if the request is not for a coach_id that matches the current user's coach_id
+
+    """
+    request = db.query(ClientCoachRequest).filter(ClientCoachRequest.id == request_input.id).first()
+    if request is None:
+        raise HTTPException(404, detail="Client coach request not found")
+    
+    if request.coach_id != acc.coach_id:
+        raise HTTPException(403, detail="You are not the owner of this coach request")
+    
+    if request_input.is_accepted:
+        request.is_accepted = True
+        db.add(ClientCoachRequest(is_accepted = request.is_accepted, client_id = request.client_id, coach_id = request.coach_id)) # type: ignore
+        db.flush()
+
+        return AcceptedClientResponse(client_coach_request_id=request.id, client_id=request.client_id, coach_id=request.coach_id) # type: ignore
