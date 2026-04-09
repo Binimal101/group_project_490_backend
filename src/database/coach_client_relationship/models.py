@@ -31,4 +31,5 @@ class ChatMessage(SQLModelLU, table=True):
   id : Optional[int] = Field(default=None, primary_key=True)
   chat_id : int = Field(foreign_key="chat.id", ondelete="CASCADE")
   from_account_id : int = Field(foreign_key="account.id", index=True)
-  is_read : bool
+  is_read : bool = Field(default=False)
+  message_text : str

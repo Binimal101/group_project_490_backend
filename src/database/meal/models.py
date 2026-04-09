@@ -21,14 +21,22 @@ class PortionSize(SQLModelLU, table=True):
     count: int
 
 
+class MealIngredient(SQLModelLU, table=True): #each meal ingredient calories is sourced from USDA food database, which provides calories per portion size, and portion size is defined by a count and unit (e.g. 1 cup of rice, 2 tbsp of olive oil)
+    __tablename__ = "meal_ingredient"  # type: ignore
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    meal_id: int = Field(foreign_key="meal.id")
+    ingredient_name: str
+    portion_size_id: int = Field(foreign_key="portion_size.id")
+    calories: int
+
+
 class Meal(SQLModelLU, table=True):
     __tablename__ = "meal"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
     created_by_account_id: int = Field(foreign_key="account.id", index=True)
     meal_name: str
-    calories: int
-    portion_size_id: int = Field(foreign_key="portion_size.id")
 
 
 class ClientPrescribedMeal(SQLModelLU, table=True):
