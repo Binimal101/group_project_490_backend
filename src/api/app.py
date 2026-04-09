@@ -23,4 +23,4 @@ def read_current_account(user = Depends(get_account_from_bearer)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, port=9090)    
+    uvicorn.run(app, host="0.0.0.0", port=9090)    
