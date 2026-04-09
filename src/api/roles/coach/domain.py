@@ -39,7 +39,6 @@ class CreateCoachRequestResponse(BaseModel):
 
 class UpdateCoachInfoResponse(BaseModel):
     #coach row updated with new certs, exps, and avails, but still has verified=False
-    coach_request_id: int
     coach_id: int
 
 class CoachRequestDeniedResponse(BaseModel):
