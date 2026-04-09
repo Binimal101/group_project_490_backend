@@ -31,6 +31,10 @@ app.include_router(client_router)
 def read_current_account(user = Depends(get_account_from_bearer)):
     return serialize_account(user)
 
+@app.get("/")
+def health():
+    return
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, port=9090)    
