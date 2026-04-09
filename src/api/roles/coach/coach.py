@@ -123,7 +123,7 @@ def coach_request_denied(db = Depends(get_session), acc: Account = Depends(get_c
     
     db.commit()
 
-    return CoachRequestDeniedResponse(coach_request_id=cr.id, coach_id=acc.coach_id) # type: ignore
+    return CoachRequestDeniedResponse(coach_id=acc.coach_id) # type: ignore
 
 @router.post("/me", response_model=CoachAccountResponse)
 def me(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
