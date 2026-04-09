@@ -1,10 +1,9 @@
 import os
 import pytest
-from datetime import date
 from fastapi.testclient import TestClient
 from sqlmodel import SQLModel, create_engine, Session
-import datetime as dt
 from dotenv import load_dotenv
+from sqlalchemy import MetaData
 
 # Load environment variables
 load_dotenv()
@@ -34,9 +33,10 @@ from src.database.payment.models import *
 from src.database.telemetry.models import *
 from src.database.role_management.models import *
 from src.database.admin.models import *
-
-import concurrent.futures
-from sqlalchemy import text
+from src.database.meal.models import *
+from src.database.workouts_and_activities.models import *
+from src.database.reports.models import *
+from src.database.coach_client_relationship.models import *
 
 @pytest.fixture(scope="session")
 def engine():
@@ -44,17 +44,13 @@ def engine():
         testing_db_url, # type: ignore
         echo=False,
     )
+
+    # Fully reset schema state to match current ORM models.
+    # This avoids drift when tables/columns/constraints changed over time.
+    reflected = MetaData()
+    reflected.reflect(bind=_engine)
+    reflected.drop_all(bind=_engine)
     SQLModel.metadata.create_all(_engine)
-    
-    # Wipe the database ONCE at the start of the entire test session,
-    # rather than before every single test. This is possible because
-    # test payloads generate unique users every time.
-    def wipe_table(table):
-        with _engine.begin() as conn:
-            conn.execute(text(f'TRUNCATE "{table.name}" CASCADE;'))
-            
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        executor.map(wipe_table, SQLModel.metadata.sorted_tables)
         
     return _engine
 

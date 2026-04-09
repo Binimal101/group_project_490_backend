@@ -65,7 +65,7 @@ class WorkoutPlanActivity(SQLModelLU, table=True):
     workout_plan_id: int = Field(foreign_key="workout_plan.id")
     workout_activity_id: int = Field(foreign_key="workout_activity.id")
     estimated_calories: Decimal = Field(max_digits=8, decimal_places=2)
-    modified_by_account_id: int = Field(foreign_key="account.id")
+    modified_by_account_id: int = Field(foreign_key="account.id", index=True)
     planned_duration: Optional[int] = None
     planned_reps: Optional[int] = None
     planned_sets: Optional[int] = None

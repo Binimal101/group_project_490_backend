@@ -10,7 +10,7 @@ class ClientTelemetry(SQLModelLU, table=True):
     __tablename__ = "client_telemetry"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    client_id: int = Field(foreign_key="client.id")
+    client_id: int = Field(foreign_key="client.id", ondelete="CASCADE")
     date: date
 
 
@@ -18,7 +18,7 @@ class StepCount(SQLModelLU, table=True):
     __tablename__ = "step_count"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    client_telemetry_id: int = Field(foreign_key="client_telemetry.id")
+    client_telemetry_id: int = Field(foreign_key="client_telemetry.id", ondelete="CASCADE")
     step_count: int
 
 
@@ -51,7 +51,7 @@ class DailyMoodSurvey(SQLModelLU, table=True):
     is_started: bool
     is_finished: bool
     completed_survey_id: Optional[int] = Field(default=None, foreign_key="completed_survey.id")
-    client_telemetry_id: int = Field(foreign_key="client_telemetry.id")
+    client_telemetry_id: int = Field(foreign_key="client_telemetry.id", ondelete="CASCADE")
 
 
 class HealthMetrics(SQLModelLU, table=True):
@@ -59,16 +59,16 @@ class HealthMetrics(SQLModelLU, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     weight: int
-    client_telemetry_id: int = Field(foreign_key="client_telemetry.id")
+    client_telemetry_id: int = Field(foreign_key="client_telemetry.id", ondelete="CASCADE")
 
 
 class CompletedMealActivity(SQLModelLU, table=True):
     __tablename__ = "completed_meal_activity"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    client_prescribed_meal_id: Optional[int] = Field(default=None, foreign_key="client_prescribed_meal.id")
+    client_prescribed_meal_id: Optional[int] = Field(default=None, foreign_key="client_prescribed_meal.id", ondelete="CASCADE")
     on_demand_meal_id: Optional[int] = Field(default=None, foreign_key="meal.id")
-    client_telemetry_id: int = Field(foreign_key="client_telemetry.id")
+    client_telemetry_id: int = Field(foreign_key="client_telemetry.id", ondelete="CASCADE")
 
 
 class CompletedWorkout(SQLModelLU, table=True):
@@ -78,4 +78,4 @@ class CompletedWorkout(SQLModelLU, table=True):
     workout_plan_activity_id: Optional[int] = Field(default=None, foreign_key="workout_plan_activity.id")
     workout_activity_id: Optional[int] = Field(default=None, foreign_key="workout_activity.id")
     completed_workout_details_id: Optional[int] = Field(default=None, foreign_key="completed_workout_activity.id")
-    client_telemetry_id: int = Field(foreign_key="client_telemetry.id")
+    client_telemetry_id: int = Field(foreign_key="client_telemetry.id", ondelete="CASCADE")

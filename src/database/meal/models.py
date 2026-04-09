@@ -25,7 +25,7 @@ class Meal(SQLModelLU, table=True):
     __tablename__ = "meal"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    created_by_account_id: int = Field(foreign_key="account.id")
+    created_by_account_id: int = Field(foreign_key="account.id", index=True)
     meal_name: str
     calories: int
     portion_size_id: int = Field(foreign_key="portion_size.id")
@@ -36,5 +36,5 @@ class ClientPrescribedMeal(SQLModelLU, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     meal_id: int = Field(foreign_key="meal.id")
-    client_id: int = Field(foreign_key="client.id")
-    prescribed_by_account_id: int = Field(foreign_key="account.id")
+    client_id: int = Field(foreign_key="client.id", ondelete="CASCADE")
+    prescribed_by_account_id: int = Field(foreign_key="account.id", index=True)
