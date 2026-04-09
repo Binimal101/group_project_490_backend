@@ -13,7 +13,12 @@ CORS_ALLOWED_ORIGINS = []
 
 db_conn_str, testing_db_conn_str, pass_salt, jwt_secret, jwt_algorithm, gcp_client_id = [None] * 6
 
-if (is_t := os.getenv("IS_TESTING", None)) is None and bool(is_t): #production
+# Interpret IS_TESTING from environment in a forgiving way
+_is_testing_raw = os.getenv("IS_TESTING", "false")
+is_testing = str(_is_testing_raw).strip().lower() in ("1", "true", "yes")
+
+if not is_testing:
+    # production / normal runtime: require DATABASE_URL and other secrets
     try:
         cors_raw = os.getenv("CORS_ALLOWED_ORIGINS", "").strip().strip("'\"")
         if cors_raw:
@@ -23,44 +28,51 @@ if (is_t := os.getenv("IS_TESTING", None)) is None and bool(is_t): #production
                     raise ValueError("CORS_ALLOWED_ORIGINS must be a JSON array")
             else:
                 CORS_ALLOWED_ORIGINS = [origin.strip() for origin in cors_raw.split(",") if origin.strip()]
-
     except json.JSONDecodeError:
         raise Exception("CORS_ALLOWED_ORIGINS not proper JSON")
 
-    if (db_conn_str := os.getenv("DATABASE_URL", None)) is None:
-        raise Exception("Error, no database connection string found")
+    db_conn_str = os.getenv("DATABASE_URL", None)
+    if db_conn_str is None:
+        raise Exception("Error, no DATABASE_URL environment variable found for production runtime")
 
-    if (jwt_secret := os.getenv("JWT_SECRET", None)) is None:
+    jwt_secret = os.getenv("JWT_SECRET", None)
+    if jwt_secret is None:
         raise Exception("Error, no JWT_SECRET found")
 
-    if (gcp_client_id := os.getenv("GCP_CLIENT_ID", None)) is None:
-        raise Exception("Error, no gcp_client_id found")
+    gcp_client_id = os.getenv("GCP_CLIENT_ID", None)
+    if gcp_client_id is None:
+        raise Exception("Error, no GCP_CLIENT_ID found")
 
-    if (pass_salt := os.getenv("PASSWORD_SALT", None)) is None:
-        raise Exception("Error, no password salt found")
+    pass_salt = os.getenv("PASSWORD_SALT", None)
+    if pass_salt is None:
+        raise Exception("Error, no PASSWORD_SALT found")
 
     jwt_algorithm = os.getenv("JWT_ALGORITHM", "HS256")
 
-    ...
-
-    #try to coerce into sqlalch and see if it actually connects
+    # try to coerce into SQLAlchemy and see if it actually connects
     try:
         create_engine(db_conn_str).connect()
         print("Database connection successful")
     except Exception as e:
-        print(f"Database connection failed: {e}")   
+        print(f"Database connection failed: {e}")
+else:
+    # testing / GH Actions runtime: use TESTING_DATABASE_URL
+    testing_db_conn_str = os.getenv("TESTING_DATABASE_URL", None)
+    if testing_db_conn_str is None:
+        raise Exception("Error, no TESTING_DATABASE_URL found for testing runtime")
 
-else: #gh actions runtime
-    if (testing_db_conn_str := os.getenv("TESTING_DATABASE_URL", None)) is None:
-        raise Exception("Error, no password salt found")
-    
 class config:
-    DATABASE_URL: str = db_conn_str or testing_db_conn_str # type: ignore
-    
+    # Prefer explicit DATABASE_URL for production; fall back to testing DB when running tests
+    DATABASE_URL: str = db_conn_str or testing_db_conn_str  # type: ignore
+
     PASSWORD_SALT: str = pass_salt or None
     JWT_SECRET: str = jwt_secret or "863724293gf7g2394vgf6b7h39824vbc"
     ALGORITHM: str = jwt_algorithm or "HS256"
-    CORS_ALLOWED_ORIGINS: list[str] = CORS_ALLOWED_ORIGINS or None # type: ignore
-    GCP_CLIENT_ID: str = gcp_client_id or None # type: ignore
+    CORS_ALLOWED_ORIGINS: list[str] = CORS_ALLOWED_ORIGINS or None  # type: ignore
+    GCP_CLIENT_ID: str = gcp_client_id or None  # type: ignore
 
-print("Config loaded successfully!\n\n")
+if is_testing:
+    print("Config loaded: running in TESTING mode using TESTING_DATABASE_URL")
+else:
+    print("Config loaded: running in PRODUCTION mode using DATABASE_URL")
+
