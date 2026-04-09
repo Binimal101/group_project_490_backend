@@ -68,19 +68,19 @@ def create_coach_request(coach_details: CoachRequestInput, db = Depends(get_sess
 
 # Updating coach request , which includes coach availability, experience, and certifications.
 @router.patch("/update_coach_info", response_model=UpdateCoachInfoResponse)
-def update_coach_request(new_coach_details: UpdateCoachInfoInput, db = Depends(get_session), coach_acc: Coach = Depends(get_coach_account)):
+def update_coach_request(new_coach_details: UpdateCoachInfoInput, db = Depends(get_session), coach_acc: Account = Depends(get_coach_account)):
     """
     Updates coach request information, including certifications, experiences, and availability
     Deletes existing certs, exps, and availabilities and replaces with new ones if the user provides them, otherwise leaves them as is
     Errors when user does not have a coach_id
     """
+    
     if coach_acc.id is None:
         raise HTTPException(404, detail="No coach profile found for this account")
     
-    coach_availability_id = db.query(CoachAvailability.id).filter(CoachAvailability.id == coach_acc.coach_availability).first()
-    coach_certifications_id = db.query(CoachCertifications.certification_id).filter(CoachCertifications.coach_id == coach_acc.id).all()
-    coach_experiences_id = db.query(CoachExperience.experience_id).filter(CoachExperience.coach_id == coach_acc.id).all()
+    coach = db.get(Coach, coach_acc.coach_id)
 
+    coach_availability_id = db.query(CoachAvailability.id).filter(CoachAvailability.id == coach.coach_availability).scalar()
     if new_coach_details.availabilities is not None:
         db.query(Availability).filter(Availability.coach_availability_id == coach_availability_id).delete(synchronize_session=False)
         for a in new_coach_details.availabilities:
@@ -88,19 +88,25 @@ def update_coach_request(new_coach_details: UpdateCoachInfoInput, db = Depends(g
             db.add(a)
 
     if new_coach_details.certifications is not None:
-        db.query(CoachCertifications).filter(Certifications.id == coach_certifications_id).delete(synchronize_session=False)
+        db.query(CoachCertifications).filter(CoachCertifications.coach_id == coach.id).delete(synchronize_session=False)
+        for c in new_coach_details.certifications:
+            db.add(c)
+        db.flush()
         for c in new_coach_details.certifications:
             db.add(CoachCertifications(coach_id=coach.id, certification_id=c.id)) # type: ignore
-    
+
     if new_coach_details.experiences is not None:
-        db.query(CoachExperience).filter(Experience.id == coach_experiences_id).delete(synchronize_session=False)
+        db.query(CoachExperience).filter(CoachExperience.coach_id == coach.id).delete(synchronize_session=False)
+        for e in new_coach_details.experiences:
+            db.add(e)
+        db.flush()
         for e in new_coach_details.experiences:
             db.add(CoachExperience(coach_id=coach.id, experience_id=e.id)) # type: ignore
 
     db.flush()
     db.commit()
 
-    return UpdateCoachInfoResponse(coach_request_id=cr.id, coach_id=coach_acc.id) # type: ignore
+    return UpdateCoachInfoResponse(coach_id=coach.id) # type: ignore
 
 @router.delete("/coach_request_denied", response_model=CoachRequestDeniedResponse)
 def coach_request_denied(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
