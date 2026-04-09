@@ -31,4 +31,4 @@ jobs:
           TESTING_DATABASE_URL: ${{ secrets.TESTING_DATABASE_URL }}
           IS_TESTING: "True"
         run: |
-          pytest tests/ -v
+          uv run pytest tests/ -v
