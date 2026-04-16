@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlmodel import Session, select
@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 from src import config
 from src.api.auth.services import hash_password
 from src.database.account.models import Account
+from src.database.coach.models import Coach
 from src.database.session import get_session
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
@@ -17,7 +18,6 @@ def create_jwt_token(user: Account) -> str:
     expire = datetime.utcnow() + timedelta(hours=2)
     to_encode = {"sub": str(user.id), "exp": expire}
     return jwt.encode(to_encode, config.JWT_SECRET, algorithm=config.ALGORITHM)
-
 
 def authenticate_user(db: Session, email: str, password: str) -> Account | None:
     user = db.exec(select(Account).where(Account.email == email)).first()
@@ -78,15 +78,31 @@ def get_client_account(account: Account = Depends(get_account_from_bearer)):
     else:
         return account #account routes down to role resources
 
-def get_coach_account(account: Account = Depends(get_account_from_bearer)):
+def get_coach_account(
+    account: Account = Depends(get_account_from_bearer),
+    db: Session = Depends(get_session)
+):
     if account.coach_id is None:
         raise role_authorization_exception
-    else:
-        return account #account routes down to role resources
+    coach = db.get(Coach, account.coach_id)
+    if not coach or not coach.verified:
+        raise role_authorization_exception
+    return account #account routes down to role resources
     
 def get_admin_account(account: Account = Depends(get_account_from_bearer)):
     if account.admin_id is None:
         raise role_authorization_exception
     else:
         return account #account routes down to role resources
+
+# Parametrization dependencies
+
+class PaginationParams:
+    def __init__(
+        self,
+        skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
+        limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return")
+    ):
+        self.skip = skip
+        self.limit = limit
 
