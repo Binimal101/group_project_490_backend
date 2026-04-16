@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 #Coach
 from src.database.coach.models import Experience, Certifications, Coach
-from src.database.account.models import Availability, Account
+from src.database.account.models import Availability, Account, Weekday
 from src.database.workouts_and_activities.models import Equiptment, WorkoutPlanActivity, WorkoutType
 class CoachRequestInput(BaseModel): #used for CRUD, mapping layer doesn't concern with mapping data->entities
     availabilities: List[Availability]
@@ -42,7 +42,6 @@ class WorkoutActivityInput(BaseModel):
     intensity_value: Optional[int] = None
     estimated_calories_per_unit_frequency: Decimal = Field(max_digits=10, decimal_places=6)
 
-
 class WorkoutPlanInput(BaseModel):
     strata_name: str
     workout_activities: Optional[List[WorkoutPlanActivity]] = Field(default=None)
@@ -69,6 +68,9 @@ class CoachRequestDeniedResponse(BaseModel):
     #coach row deleted along with certs, exps, and avails, user account set to coach_id=null
     coach_request_id: int
     coach_id: int
+
+class CoachAvailabilityResponse(BaseModel):
+    coach_availabilities: List[Availability]
 
 class AcceptedClientResponse(BaseModel):
     #client request accepted, row added to client_coach_relationship
