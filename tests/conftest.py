@@ -112,6 +112,24 @@ def coach_auth_header(test_client, client_auth_header, db_session):
     
     return client_auth_header
 
+@pytest.fixture(scope="function")
+def admin_auth_header(test_client, auth_header, db_session):
+    """Promotes a user directly to Admin using database injection mapping."""
+    me_resp = test_client.get("/me", headers=auth_header)
+    account_id = me_resp.json()["id"]
+
+    admin = Admin()
+    db_session.add(admin)
+    db_session.commit()
+    db_session.refresh(admin)
+
+    user = db_session.get(Account, account_id)
+    user.admin_id = admin.id
+    db_session.add(user)
+    db_session.commit()
+
+    return auth_header
+
 
 from tests.payload_tools.fitness import build_create_workout_payload, build_create_activity_payload
 
