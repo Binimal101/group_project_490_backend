@@ -29,14 +29,14 @@ def create_workout_plan(
             raise HTTPException(status_code=404, detail=f"WorkoutActivity {act_input.workout_activity_id} not found")
 
         # Estimate calories based on frequency metric
-        frequency = act_input.planned_duration or act_input.planned_reps or act_input.planned_sets or 0
+        frequency = act_input.planned_duration or (act_input.planned_reps * act_input.planned_sets) or 0 # type: ignore
         estimated_calories = activity.estimated_calories_per_unit_frequency * frequency
 
         plan_activity = WorkoutPlanActivity(
-            workout_plan_id=plan.id,
+            workout_plan_id=plan.id, # type: ignore
             workout_activity_id=act_input.workout_activity_id,
             estimated_calories=estimated_calories,
-            modified_by_account_id=acc.id,
+            modified_by_account_id=acc.id, # type: ignore
             planned_duration=act_input.planned_duration,
             planned_reps=act_input.planned_reps,
             planned_sets=act_input.planned_sets
