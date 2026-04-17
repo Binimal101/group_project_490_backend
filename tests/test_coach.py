@@ -1,4 +1,4 @@
-from tests.payload_tools.coach import build_coach_request_payload
+from tests.payload_tools.coach import build_coach_request_payload, build_update_coach_info_payload
 
 def test_coach_request_flow(test_client, client_auth_header):
     """
@@ -18,6 +18,23 @@ def test_coach_request_flow(test_client, client_auth_header):
     assert "coach_id" in coach_request_data
     assert "coach_request_id" in coach_request_data
 
+def test_coach_update_info_flow(test_client, coach_auth_header):
+    """
+    Test updating Coach information after a Coach Request has been created. Uses coach_auth_header, which promotes a user all the way to a Coach role.
+    """
+    update_coach_info_payload = build_update_coach_info_payload()
+
+    update_info_response = test_client.patch(
+        "/roles/coach/information",
+        json=update_coach_info_payload,
+        headers=coach_auth_header,
+    )
+
+    assert update_info_response.status_code == 200
+    update_info_data = update_info_response.json()
+    assert "coach_id" in update_info_data
+
+    
 def test_coach_me_endpoint(test_client, coach_auth_header):
     """
     Test that a registered coach can fetch their coach profile details via the /me endpoint.

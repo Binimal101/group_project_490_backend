@@ -93,14 +93,74 @@ def client_auth_header(test_client, auth_header):
     return auth_header
 
 @pytest.fixture(scope="function")
-def coach_auth_header(test_client, client_auth_header):
-    """Promotes a Client to a Coach by posting a coach creation request."""
+def coach_auth_header(test_client, client_auth_header, db_session):
+    """Promotes a Client to a Coach by posting a coach creation request and auto-verifying."""
     coach_req_payload = build_coach_request_payload()
 
-    test_client.post(
+    res = test_client.post(
         "/roles/coach/request_coach_creation",
         json=coach_req_payload,
         headers=client_auth_header,
     )
+    
+    # Auto-verify the coach
+    coach_id = res.json()["coach_id"]
+    coach = db_session.get(Coach, coach_id)
+    coach.verified = True
+    db_session.add(coach)
+    db_session.commit()
+    
     return client_auth_header
 
+@pytest.fixture(scope="function")
+def admin_auth_header(test_client, auth_header, db_session):
+    """Promotes a user directly to Admin using database injection mapping."""
+    me_resp = test_client.get("/me", headers=auth_header)
+    account_id = me_resp.json()["id"]
+
+    admin = Admin()
+    db_session.add(admin)
+    db_session.commit()
+    db_session.refresh(admin)
+
+    user = db_session.get(Account, account_id)
+    user.admin_id = admin.id
+    db_session.add(user)
+    db_session.commit()
+
+    return auth_header
+
+
+from tests.payload_tools.fitness import build_create_workout_payload, build_create_activity_payload
+
+@pytest.fixture(scope="function")
+def seed_equipment(db_session):
+    eq = Equiptment(name="Dumbbells", description="50 lbs dumbbells")
+    db_session.add(eq)
+    db_session.commit()
+    db_session.refresh(eq)
+    return eq
+
+@pytest.fixture(scope="function")
+def seed_workout(test_client, coach_auth_header):
+    workout_payload = build_create_workout_payload()
+    workout_resp = test_client.post("/roles/coach/fitness/workout", json=workout_payload, headers=coach_auth_header)
+    return workout_resp.json()["workout_id"]
+
+@pytest.fixture(scope="function")
+def seed_workout_activity(test_client, coach_auth_header, seed_workout):
+    activity_payload = build_create_activity_payload(seed_workout)
+    activity_resp = test_client.post("/roles/coach/fitness/activity", json=activity_payload, headers=coach_auth_header)
+    return activity_resp.json()["workout_activity_id"]
+
+@pytest.fixture(scope="function")
+def seed_multiple_workouts(test_client, coach_auth_header):
+    workouts_to_create = [
+        build_create_workout_payload(name="Morning Run", description="Quick run", instructions="Run fast", workout_type="duration", equipment=[]),
+        build_create_workout_payload(name="Heavy Lifts", description="Pushing iron", instructions="Lift heavy", workout_type="rep", equipment=[])
+    ]
+    workout_ids = []
+    for w in workouts_to_create:
+        resp = test_client.post("/roles/coach/fitness/workout", json=w, headers=coach_auth_header)
+        workout_ids.append(resp.json()["workout_id"])
+    return workout_ids

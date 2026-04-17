@@ -3,6 +3,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Optional
 
+from pydantic import model_validator
 from sqlmodel import Field
 
 from src.database.base import SQLModelLU
@@ -69,3 +70,18 @@ class WorkoutPlanActivity(SQLModelLU, table=True):
     planned_duration: Optional[int] = None
     planned_reps: Optional[int] = None
     planned_sets: Optional[int] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_one_time_metric(cls, values):
+        duration = values.get("planned_duration")
+        reps = values.get("planned_reps")
+        sets = values.get("planned_sets")
+
+        
+        if reps and sets and not duration:
+            return values
+        if duration and not (reps or sets):
+            return values
+        
+        raise ValueError("WorkoutPlanActivity must have either planned_duration or both planned_reps and planned_sets, but not both.")
