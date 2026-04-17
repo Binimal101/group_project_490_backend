@@ -235,12 +235,12 @@ def get_coach_availability(coach_id: int, db = Depends(get_session), acc: Accoun
 
 
 @router.post("/accept_client_request", response_model=AcceptedClientResponse)
-def accept_client_request(request_input : ClientCoachRequestInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+def accept_client_request(request_input : ClientCoachRequestInput, db = Depends(get_session), acc: Account = Depends(get_coach_account)):
     """
     Accepts a client coach request, creates a client coach relationship row
     Errors when client coach request is not found, or if the request is not for a coach_id that matches the current user's coach_id
-
     """
+    
     request = db.query(ClientCoachRequest).filter(ClientCoachRequest.id == request_input.id).first()
     if request is None:
         raise HTTPException(404, detail="Client coach request not found")
