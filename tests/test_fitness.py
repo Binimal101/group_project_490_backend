@@ -21,7 +21,7 @@ def test_coach_can_create_workout(test_client, coach_auth_header, seed_equipment
             }
         ]
     )
-    response = test_client.post("/roles/coach/fitness/create/workout", json=payload, headers=coach_auth_header)
+    response = test_client.post("/roles/coach/fitness/workout", json=payload, headers=coach_auth_header)
     assert response.status_code == 200, response.text
     data = response.json()
     assert "workout_id" in data
@@ -29,7 +29,7 @@ def test_coach_can_create_workout(test_client, coach_auth_header, seed_equipment
 
     # 3. Create an activity under that workout
     activity_payload = build_create_activity_payload(workout_id=workout_id)
-    act_response = test_client.post("/roles/coach/fitness/create/activity", json=activity_payload, headers=coach_auth_header)
+    act_response = test_client.post("/roles/coach/fitness/activity", json=activity_payload, headers=coach_auth_header)
     assert act_response.status_code == 200, act_response.text
     act_data = act_response.json()
     assert "workout_activity_id" in act_data
@@ -45,7 +45,7 @@ def test_coach_can_create_workout(test_client, coach_auth_header, seed_equipment
 def test_client_can_create_workout_plan(test_client, client_auth_header, seed_workout_activity):
     # 5. Create a workout plan (Shared route, appropriately simulated using client_auth_header over a seeded activity)
     plan_payload = build_create_plan_payload(workout_activity_id=seed_workout_activity)
-    plan_response = test_client.post("/roles/shared/fitness/create/plan", json=plan_payload, headers=client_auth_header)
+    plan_response = test_client.post("/roles/shared/fitness/plan", json=plan_payload, headers=client_auth_header)
     assert plan_response.status_code == 200, plan_response.text
     plan_data = plan_response.json()
     assert "workout_plan_id" in plan_data
@@ -58,7 +58,7 @@ def test_client_query_workout(test_client, coach_auth_header, client_auth_header
         build_create_workout_payload(name="Heavy Lifts", description="Pushing iron", instructions="Lift heavy", workout_type="rep", equipment=[{"equiptment_id": seed_equipment.id, "is_required": True, "is_recommended": True}])
     ]
     for w in workouts_to_create:
-        resp = test_client.post("/roles/coach/fitness/create/workout", json=w, headers=coach_auth_header)
+        resp = test_client.post("/roles/coach/fitness/workout", json=w, headers=coach_auth_header)
         assert resp.status_code == 200, resp.text
 
     # Client queries by text (in name)
@@ -109,22 +109,22 @@ def test_query_supported_equiptment(test_client, client_auth_header, coach_auth_
 def test_errors_on_invalid_data(test_client, coach_auth_header):
     # Invalid workout type
     payload = build_create_workout_payload(workout_type="not_a_valid_type")
-    resp = test_client.post("/roles/coach/fitness/create/workout", json=payload, headers=coach_auth_header)
+    resp = test_client.post("/roles/coach/fitness/workout", json=payload, headers=coach_auth_header)
     assert resp.status_code == 422 or resp.status_code == 400
 
     # Missing equipment ID
     payload = build_create_workout_payload(workout_type="rep", equipment=[{"equiptment_id": 99999, "is_required": True, "is_recommended": True}])
-    resp2 = test_client.post("/roles/coach/fitness/create/workout", json=payload, headers=coach_auth_header)
+    resp2 = test_client.post("/roles/coach/fitness/workout", json=payload, headers=coach_auth_header)
     assert resp2.status_code == 404
 
     # Activity tied to missing workout
     act_payload = build_create_activity_payload(workout_id=99999)
-    resp3 = test_client.post("/roles/coach/fitness/create/activity", json=act_payload, headers=coach_auth_header)
+    resp3 = test_client.post("/roles/coach/fitness/activity", json=act_payload, headers=coach_auth_header)
     assert resp3.status_code == 404
 
     # Plan tied to missing activity
     plan_payload = build_create_plan_payload(workout_activity_id=99999)
-    resp4 = test_client.post("/roles/shared/fitness/create/plan", json=plan_payload, headers=coach_auth_header)
+    resp4 = test_client.post("/roles/shared/fitness/plan", json=plan_payload, headers=coach_auth_header)
     assert resp4.status_code == 404
     
     # Workout Plan Validation Failure: Both duration and sets/reps provided
@@ -132,7 +132,7 @@ def test_errors_on_invalid_data(test_client, coach_auth_header):
     plan_payload["activities"][0]["planned_duration"] = 60
     plan_payload["activities"][0]["planned_reps"] = 10
     plan_payload["activities"][0]["planned_sets"] = 3
-    resp5 = test_client.post("/roles/shared/fitness/create/plan", json=plan_payload, headers=coach_auth_header)
+    resp5 = test_client.post("/roles/shared/fitness/plan", json=plan_payload, headers=coach_auth_header)
     assert resp5.status_code == 422
     
     # Workout Plan Validation Failure: Neither duration nor sets/reps provided
@@ -140,7 +140,7 @@ def test_errors_on_invalid_data(test_client, coach_auth_header):
     plan_payload["activities"][0]["planned_duration"] = None
     plan_payload["activities"][0]["planned_reps"] = None
     plan_payload["activities"][0]["planned_sets"] = None
-    resp6 = test_client.post("/roles/shared/fitness/create/plan", json=plan_payload, headers=coach_auth_header)
+    resp6 = test_client.post("/roles/shared/fitness/plan", json=plan_payload, headers=coach_auth_header)
     assert resp6.status_code == 422
     
     # Workout Plan Validation Failure: Both duration and sets/reps provided
@@ -148,7 +148,7 @@ def test_errors_on_invalid_data(test_client, coach_auth_header):
     plan_payload["activities"][0]["planned_duration"] = 60
     plan_payload["activities"][0]["planned_reps"] = 10
     plan_payload["activities"][0]["planned_sets"] = 3
-    resp5 = test_client.post("/roles/shared/fitness/create/plan", json=plan_payload, headers=coach_auth_header)
+    resp5 = test_client.post("/roles/shared/fitness/plan", json=plan_payload, headers=coach_auth_header)
     assert resp5.status_code == 422
     
     # Workout Plan Validation Failure: Neither duration nor sets/reps provided
@@ -156,18 +156,18 @@ def test_errors_on_invalid_data(test_client, coach_auth_header):
     plan_payload["activities"][0]["planned_duration"] = None
     plan_payload["activities"][0]["planned_reps"] = None
     plan_payload["activities"][0]["planned_sets"] = None
-    resp6 = test_client.post("/roles/shared/fitness/create/plan", json=plan_payload, headers=coach_auth_header)
+    resp6 = test_client.post("/roles/shared/fitness/plan", json=plan_payload, headers=coach_auth_header)
     assert resp6.status_code == 422
 
 def test_coach_can_create_workout_and_upsert_equiptment(test_client, coach_auth_header):
     payload = build_create_workout_payload(equipment=[{"name": "Kettlebell", "description": "15 lbs", "is_required": True, "is_recommended": True}])
-    response = test_client.post("/roles/coach/fitness/create/workout", json=payload, headers=coach_auth_header)
+    response = test_client.post("/roles/coach/fitness/workout", json=payload, headers=coach_auth_header)
     assert response.status_code == 200
 
 def test_client_query_plans(test_client, client_auth_header, seed_workout_activity, db_session):
     # Create the base workout plan through existing shared routes
     plan_payload = build_create_plan_payload(workout_activity_id=seed_workout_activity)
-    plan_response = test_client.post("/roles/shared/fitness/create/plan", json=plan_payload, headers=client_auth_header)
+    plan_response = test_client.post("/roles/shared/fitness/plan", json=plan_payload, headers=client_auth_header)
     assert plan_response.status_code == 200
     workout_plan_id = plan_response.json()["workout_plan_id"]
 

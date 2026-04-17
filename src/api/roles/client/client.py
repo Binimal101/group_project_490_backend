@@ -63,7 +63,7 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
 
     return CreateClientResponse(client_id=client.id) # type: ignore
 
-@router.post("/update_client_information", response_model=DunderResponse)
+@router.patch("/information", response_model=DunderResponse)
 def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
     Availabilities: providing availabilities will ADD availability, should REMOVE exisiting availability BEFORE calling this method if batch updating

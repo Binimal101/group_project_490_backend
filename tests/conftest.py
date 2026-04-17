@@ -144,13 +144,13 @@ def seed_equipment(db_session):
 @pytest.fixture(scope="function")
 def seed_workout(test_client, coach_auth_header):
     workout_payload = build_create_workout_payload()
-    workout_resp = test_client.post("/roles/coach/fitness/create/workout", json=workout_payload, headers=coach_auth_header)
+    workout_resp = test_client.post("/roles/coach/fitness/workout", json=workout_payload, headers=coach_auth_header)
     return workout_resp.json()["workout_id"]
 
 @pytest.fixture(scope="function")
 def seed_workout_activity(test_client, coach_auth_header, seed_workout):
     activity_payload = build_create_activity_payload(seed_workout)
-    activity_resp = test_client.post("/roles/coach/fitness/create/activity", json=activity_payload, headers=coach_auth_header)
+    activity_resp = test_client.post("/roles/coach/fitness/activity", json=activity_payload, headers=coach_auth_header)
     return activity_resp.json()["workout_activity_id"]
 
 @pytest.fixture(scope="function")
@@ -161,6 +161,6 @@ def seed_multiple_workouts(test_client, coach_auth_header):
     ]
     workout_ids = []
     for w in workouts_to_create:
-        resp = test_client.post("/roles/coach/fitness/create/workout", json=w, headers=coach_auth_header)
+        resp = test_client.post("/roles/coach/fitness/workout", json=w, headers=coach_auth_header)
         workout_ids.append(resp.json()["workout_id"])
     return workout_ids

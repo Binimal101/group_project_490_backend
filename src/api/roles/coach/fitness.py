@@ -14,7 +14,7 @@ from src.api.roles.coach.domain import (
 
 router = APIRouter(prefix="/roles/coach/fitness", tags=["coach", "fitness"])
 
-@router.post("/create/workout", response_model=CreateWorkoutResponse)
+@router.post("/workout", response_model=CreateWorkoutResponse)
 def create_workout(
     payload: CreateWorkoutInput,
     db: Session = Depends(get_session),
@@ -26,7 +26,7 @@ def create_workout(
 
     passing by name wto id makes a new record
     """
-    
+
     try:
         workout_type = WorkoutType(payload.workout_type)
     except ValueError:
@@ -69,7 +69,7 @@ def create_workout(
     db.commit()
     return CreateWorkoutResponse(workout_id=workout.id)
 
-@router.post("/create/activity", response_model=CreateActivityResponse)
+@router.post("/activity", response_model=CreateActivityResponse)
 def create_activity(
     payload: CreateActivityInput,
     db: Session = Depends(get_session),

@@ -30,3 +30,36 @@ def build_coach_request_payload(weekday="tuesday"):
             }
         ],
     }
+
+def build_update_coach_info_payload(weekday="wednesday"):
+    """
+    Builds a mock payload for updating coach information, which includes certifications, experiences, and availability.
+    """
+    return {
+        "availabilities": [
+            {
+                "weekday": weekday,
+                "start_time": "19:00:00",
+                "end_time": "21:00:00",
+            }
+        ],
+        "experiences": [
+            {
+                "experience_name": "Group Fitness Instructor",
+                "experience_title": "Lead Instructor",
+                "experience_description": "Led group fitness classes for 2 years.",
+                "experience_start": "2021-01-01",
+                "experience_end": "2023-01-01",
+            }
+        ],
+        "certifications": [
+            {
+                "certification_name": "Advanced Coaching Certificate",
+                "certification_title": "Level 2",
+                "certification_description": "Advanced coaching certification.",
+                "certification_date": "2024-06-01",
+                "certification_score": "A+",
+                "certification_organization": "Test Institute",
+            }
+        ],
+    }

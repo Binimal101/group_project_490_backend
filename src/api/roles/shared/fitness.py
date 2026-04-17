@@ -12,7 +12,7 @@ from src.database.workouts_and_activities.models import Workout, WorkoutType, Wo
 
 router = APIRouter(prefix="/roles/shared/fitness", tags=["shared", "fitness"])
 
-@router.post("/create/plan", response_model=CreateWorkoutPlanResponse)
+@router.post("/plan", response_model=CreateWorkoutPlanResponse)
 def create_workout_plan(
     payload: CreateWorkoutPlanInput,
     db: Session = Depends(get_session),
