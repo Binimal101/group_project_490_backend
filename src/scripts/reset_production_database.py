@@ -28,7 +28,9 @@ def reset_database_schema(database_url: str) -> None:
 def main() -> None:
     load_dotenv()
 
-    database_url = os.getenv("DATABASE_URL")
+    from src import config
+
+    database_url = config.DATABASE_URL
     if not database_url:
         raise RuntimeError("DATABASE_URL environment variable is not set")
 
