@@ -13,11 +13,13 @@ class CoachRequestInput(BaseModel): #used for CRUD, mapping layer doesn't concer
     availabilities: List[Availability]
     experiences: List[Experience]
     certifications: List[Certifications]
+    specialties: Optional[List[str]] = Field(default=None)
 
 class UpdateCoachInfoInput(BaseModel):
     availabilities: Optional[List[Availability]] = Field(default=None)
     experiences: Optional[List[Experience]] = Field(default=None)
     certifications: Optional[List[Certifications]] = Field(default=None)
+    specialties: Optional[List[str]] = Field(default=None)
 
 class ClientCoachRequestInput(BaseModel):
     id: int

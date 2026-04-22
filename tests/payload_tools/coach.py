@@ -1,3 +1,5 @@
+import random
+
 def build_coach_request_payload(weekday="tuesday"):
     """
     Builds a mock payload for completing the coach registration request.
@@ -29,6 +31,7 @@ def build_coach_request_payload(weekday="tuesday"):
                 "certification_organization": "Test Institute",
             }
         ],
+        "specialties": [random.choice(["Strength Training", "Cardio", "Flexibility", "Nutrition"]) for _ in range(random.randint(1, 3))],
     }
 
 def build_update_coach_info_payload(weekday="wednesday"):
@@ -62,4 +65,5 @@ def build_update_coach_info_payload(weekday="wednesday"):
                 "certification_organization": "Test Institute",
             }
         ],
+        "specialties": [random.choice(["Strength Training", "Cardio", "Flexibility", "Nutrition"]) for _ in range(random.randint(1, 3))],
     }

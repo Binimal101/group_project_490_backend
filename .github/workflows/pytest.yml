@@ -29,6 +29,8 @@ jobs:
         env:
           # Pulls the testing database string from your GitHub Repository Secrets
           TESTING_DATABASE_URL: ${{ secrets.TESTING_DATABASE_URL }}
+          TESTING_SUPABASE_URL: ${{ secrets.TESTING_SUPABASE_URL}}
+          TESTING_SUPABASE_SERVICE_KEY: ${{ secrets.TESTING_SUPABASE_SERVICE_KEY }}
           IS_TESTING: "True"
         run: |
           uv run pytest tests/ -v

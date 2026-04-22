@@ -29,12 +29,15 @@ def main() -> None:
     load_dotenv()
 
     from src import config
-
+    
+    print("Overwriting config values to ensure testing database is used for this script...")
+    config.DATABASE_URL = os.getenv("TESTING_DATABASE_URL") # type: ignore
     database_url = config.DATABASE_URL
+    
     if not database_url:
-        raise RuntimeError("DATABASE_URL environment variable is not set")
+        raise RuntimeError("TESTING_DATABASE_URL environment variable is not set")
 
-    if input("This will IRREVERSIBLY DESTROY ALL DATA in the production database. Type 'y' to confirm: ") != "y":
+    if input("This will IRREVERSIBLY DESTROY ALL DATA in the testing database. Type 'y' to confirm: ") != "y":
         print("Aborting.")
         return
 

@@ -1,0 +1,118 @@
+[
+  {
+    "name": "Barbell Deadlift",
+    "description": "Heavy compound posterior-chain lift.",
+    "instructions": "Warm up, set stance, hinge at hips, maintain tight core, lockout.",
+    "workout_type": "REPETITION_BASED",
+    "equipment": ["Barbell", "Weight Plates", "Lifting Belt"],
+    "activities": [
+      { "intensity_measure": "lbs", "intensity_value": 315, "estimated_calories_per_unit_frequency": 0.92267, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 275, "estimated_calories_per_unit_frequency": 0.81, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 225, "estimated_calories_per_unit_frequency": 0.65, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 135, "estimated_calories_per_unit_frequency": 0.36, "unit": "rep" }
+    ]
+  },
+  {
+    "name": "Back Squat",
+    "description": "Barbell squat for leg strength.",
+    "instructions": "Bar on upper back, descend to depth, drive through heels.",
+    "workout_type": "REPETITION_BASED",
+    "equipment": ["Barbell", "Squat Rack", "Weight Plates"],
+    "activities": [
+      { "intensity_measure": "lbs", "intensity_value": 225, "estimated_calories_per_unit_frequency": 0.837621, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 185, "estimated_calories_per_unit_frequency": 0.70, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 135, "estimated_calories_per_unit_frequency": 0.45, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 95, "estimated_calories_per_unit_frequency": 0.26, "unit": "rep" }
+    ]
+  },
+  {
+    "name": "Bench Press",
+    "description": "Upper-body pressing strength exercise.",
+    "instructions": "Control bar, touch chest, press explosively.",
+    "workout_type": "REPETITION_BASED",
+    "equipment": ["Barbell", "Bench", "Weight Plates"],
+    "activities": [
+      { "intensity_measure": "lbs", "intensity_value": 185, "estimated_calories_per_unit_frequency": 0.586536, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 155, "estimated_calories_per_unit_frequency": 0.50, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 115, "estimated_calories_per_unit_frequency": 0.36, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 65, "estimated_calories_per_unit_frequency": 0.20, "unit": "rep" }
+    ]
+  },
+  {
+    "name": "Kettlebell Swings",
+    "description": "Hip-hinge explosive conditioning using kettlebell.",
+    "instructions": "Hinge at hips, snap hips to swing kettlebell to chest height.",
+    "workout_type": "DURATION_BASED",
+    "equipment": ["Kettlebell"],
+    "activities": [
+      { "intensity_measure": "lbs", "intensity_value": 53, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.145833 },
+      { "intensity_measure": "lbs", "intensity_value": 35, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.10 },
+      { "intensity_measure": "lbs", "intensity_value": 24, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.06 },
+      { "intensity_measure": "lbs", "intensity_value": 16, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.035 }
+    ]
+  }
+  ,
+  {
+    "name": "Pull Ups",
+    "description": "Upper-body pulling exercise.",
+    "instructions": "Grip bar, pull chin above bar, control the descent.",
+    "workout_type": "REPETITION_BASED",
+    "equipment": ["Pull-up Bar"],
+    "activities": [
+      { "intensity_measure": "bodyweight", "intensity_value": 75, "estimated_calories_per_unit_frequency": 0.08, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 10, "estimated_calories_per_unit_frequency": 0.095, "unit": "rep" },
+      { "intensity_measure": "bodyweight", "intensity_value": 65, "estimated_calories_per_unit_frequency": 0.07, "unit": "rep" },
+      { "intensity_measure": "bodyweight", "intensity_value": 50, "estimated_calories_per_unit_frequency": 0.05, "unit": "rep" }
+    ]
+  },
+  {
+    "name": "Overhead Press",
+    "description": "Standing shoulder press with barbell.",
+    "instructions": "Press bar overhead, lockout, lower under control.",
+    "workout_type": "REPETITION_BASED",
+    "equipment": ["Barbell", "Dumbbells"],
+    "activities": [
+      { "intensity_measure": "lbs", "intensity_value": 95, "estimated_calories_per_unit_frequency": 0.25, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 75, "estimated_calories_per_unit_frequency": 0.20, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 55, "estimated_calories_per_unit_frequency": 0.14, "unit": "rep" },
+      { "intensity_measure": "lbs", "intensity_value": 35, "estimated_calories_per_unit_frequency": 0.09, "unit": "rep" }
+    ]
+  },
+  {
+    "name": "Rowing Machine",
+    "description": "Full-body cardiovascular conditioning on rower.",
+    "instructions": "Drive with legs, lean back, pull handle to chest.",
+    "workout_type": "DURATION_BASED",
+    "equipment": ["Rowing Machine"],
+    "activities": [
+      { "intensity_measure": "watts", "intensity_value": 150, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.12 },
+      { "intensity_measure": "watts", "intensity_value": 200, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.16 },
+      { "intensity_measure": "watts", "intensity_value": 100, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.08 },
+      { "intensity_measure": "watts", "intensity_value": 50, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.04 }
+    ]
+  },
+  {
+    "name": "Burpees",
+    "description": "High-intensity full-body movement.",
+    "instructions": "Drop to plank, push-up, jump back to stand and jump.",
+    "workout_type": "DURATION_BASED",
+    "equipment": ["Bodyweight"],
+    "activities": [
+      { "intensity_measure": "none", "intensity_value": 0, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.20 },
+      { "intensity_measure": "none", "intensity_value": 0, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.30 },
+      { "intensity_measure": "none", "intensity_value": 0, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.15 }
+    ]
+  },
+  {
+    "name": "Jump Rope",
+    "description": "Cardio conditioning with rope.",
+    "instructions": "Maintain steady rhythm, land softly on forefeet.",
+    "workout_type": "DURATION_BASED",
+    "equipment": ["Jump Rope"],
+    "activities": [
+      { "intensity_measure": "rpm", "intensity_value": 120, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.15 },
+      { "intensity_measure": "rpm", "intensity_value": 160, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.20 },
+      { "intensity_measure": "rpm", "intensity_value": 80, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.10 }
+    ]
+  }
+]
