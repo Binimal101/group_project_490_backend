@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional
 from fastapi import HTTPException
 
@@ -17,6 +17,13 @@ class CoachRequestInput(BaseModel): #used for CRUD, mapping layer doesn't concer
     payment_interval: PricingInterval
     price_cents: int
     specialties: Optional[List[str]] = Field(default=None)
+
+    @field_validator("price_cents")
+    @classmethod
+    def validate_price_cents(cls, v):
+        if v < 0:
+            raise ValueError("Price in cents must be a non-negative integer")
+        return v
 
 class UpdateCoachInfoInput(BaseModel):
     availabilities: Optional[List[Availability]] = Field(default=None)

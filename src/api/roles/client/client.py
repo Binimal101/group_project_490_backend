@@ -115,7 +115,6 @@ def create_coach_request(coach_id: int, db = Depends(get_session), acc: Account 
     if existing_request:
         raise HTTPException(409, detail="A pending request to this coach already exists")
 
-    # Create a pending request (is_accepted is None for pending state)
     request = ClientCoachRequest(client_id=client.id, coach_id=coach.id, is_accepted=None)
     db.add(request)
 
