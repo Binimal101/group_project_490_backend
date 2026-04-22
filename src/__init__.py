@@ -68,8 +68,7 @@ else:
     testing_db_conn_str = os.getenv("TESTING_DATABASE_URL", None)
     if testing_db_conn_str is None:
         raise Exception("Error, no TESTING_DATABASE_URL found for testing runtime")
-    # In testing mode prefer explicit testing-specific Supabase vars so integration
-    # tests can run against a test project without overriding production values.
+
     TESTING_SUPABASE_URL = os.getenv("TESTING_SUPABASE_URL", None)
     TESTING_SUPABASE_SERVICE_KEY = os.getenv("TESTING_SUPABASE_SERVICE_KEY", None) or os.getenv("TESTING_SUPABASE_KEY", None)
 
