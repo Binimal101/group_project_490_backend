@@ -1,7 +1,6 @@
-def build_coach_request_payload(weekday="tuesday", payment_interval="monthly", price_cents=3000):
 import random
 
-def build_coach_request_payload(weekday="tuesday"):
+def build_coach_request_payload(weekday="tuesday", payment_interval="monthly", price_cents=3000):
     """
     Builds a mock payload for completing the coach registration request.
     Includes pricing fields required by the current API contract.
