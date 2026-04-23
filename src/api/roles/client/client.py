@@ -62,6 +62,9 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
     
     db.flush()
 
+    if telem.id is None:
+        raise HTTPException(500, detail="Something went wrong while creating the telemetry record")
+
     client_details.initial_health_metric.client_telemetry_id = telem.id
 
     db.add(client_details.initial_health_metric)
@@ -120,7 +123,12 @@ def create_coach_request(coach_id: int, db = Depends(get_session), acc: Account 
     db.add(request)
     db.flush()
 
+    if request.id is None:
+        raise HTTPException(500, detail="Something went wrong while creating the coach request")
+    
     return ClientCoachRequestResponse(request_id=request.id)
+
+
 @router.post("/upload_progress_picture")
 def upload_progress_picture(file: UploadFile, acc: Account = Depends(get_client_account)):
     """Upload an image to the `progress_picture` bucket and return the public URL.
@@ -157,6 +165,7 @@ def upload_progress_picture(file: UploadFile, acc: Account = Depends(get_client_
 
     public_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{bucket}/{filename}"
     return {"url": public_url}
+
 
 @router.post("/coach_report/{coach_id}", response_model=CoachReportResponse)
 def coach_report(coach_id: int, report_summary: str, db = Depends(get_session), acc: Account = Depends(get_client_account)):
