@@ -10,7 +10,7 @@ from src.database.workouts_and_activities.models import WorkoutPlanActivity
 from src.database.account.models import Account
 from src.api.dependencies import get_client_account, PaginationParams
 from src.database.client.models import ClientWorkoutPlan 
-from src.database.meals.models import ClientPrescribedMeal
+from src.database.meal.models import ClientPrescribedMeal
 from src.database.telemetry.models import (
     ClientTelemetry, 
     DailyMoodSurvey, 
