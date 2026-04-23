@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import field_validator, model_validator
 from sqlmodel import Session, select, SQLModel
@@ -105,12 +105,8 @@ class DailyMealSurveyResponse(SQLModel):
     completed_meal_activity_id: Optional[int] = None
 
 
-def _today_utc_midnight() -> datetime:
-    return datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-
-
 def _get_or_create_telemetry(db: Session, client_id: int) -> ClientTelemetry:
-    today = _today_utc_midnight()
+    today = datetime.utcnow().date()
     telemetry = db.exec(
         select(ClientTelemetry).where(
             ClientTelemetry.client_id == client_id,
@@ -156,7 +152,7 @@ def _create_survey_response(survey, telemetry, completed_key: str, response_mode
     return response_model(**response_data)
 
 
-def get_or_create_daily_survey(db: Session, client_id: int) -> DailyMoodSurvey:
+def get_or_create_daily_survey(db: Session, client_id: int) -> Tuple[ClientTelemetry, DailyMoodSurvey]:
     return _get_or_create_daily_survey(db, client_id, DailyMoodSurvey)
 
 @router.get("/query/plans")
@@ -198,15 +194,15 @@ def start_daily_survey(
     
     telemetry, survey = get_or_create_daily_survey(db, acc.client_id)
 
-    if survey.is_started:
-        raise HTTPException(status_code=400, detail="Survey already started")
+    if survey.is_finished:
+        raise HTTPException(status_code=400, detail="Survey has already been submitted")
 
-    survey.is_started = True
-    survey.is_seen = True
-
-    db.add(survey)
-    db.commit()
-    db.refresh(survey)
+    if not survey.is_started:
+        survey.is_started = True
+        survey.is_seen = True
+        db.add(survey)
+        db.commit()
+        db.refresh(survey)
 
     return DailySurveyResponse(
         survey_id=survey.id,
@@ -281,16 +277,22 @@ def start_daily_workout_survey(
         raise HTTPException(status_code=404, detail="Client profile not found")
 
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyWorkoutSurvey)
-    if survey.is_started:
-        raise HTTPException(status_code=400, detail="Survey already started")
+    if survey.is_finished:
+        raise HTTPException(status_code=400, detail="Survey has already been submitted")
+    
+    if not survey.is_started:
+        survey.is_started = True
+        survey.is_seen = True
+        db.add(survey)
+        db.commit()
+        db.refresh(survey)
 
-    survey.is_started = True
-    survey.is_seen = True
-    db.add(survey)
-    db.commit()
-    db.refresh(survey)
-
-    return _create_survey_response(survey, telemetry, "completed_workout_id", DailyWorkoutSurveyResponse)
+    return _create_survey_response(
+        survey,
+        telemetry,
+        "completed_workout_id",
+        DailyWorkoutSurveyResponse
+    )
 
 
 @router.post("/daily-survey/workout/submit", response_model=DailyWorkoutSurveyResponse)
@@ -357,17 +359,18 @@ def start_daily_body_metrics_survey(
         raise HTTPException(status_code=404, detail="Client profile not found")
 
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyBodyMetricsSurvey)
-    if survey.is_started:
-        raise HTTPException(status_code=400, detail="Survey already started")
 
-    survey.is_started = True
-    survey.is_seen = True
-    db.add(survey)
-    db.commit()
-    db.refresh(survey)
+    if survey.is_finished:
+        raise HTTPException(status_code=400, detail="Survey has already been submitted")
+    
+    if not survey.is_started:
+        survey.is_started = True
+        survey.is_seen = True
+        db.add(survey)
+        db.commit()
+        db.refresh(survey)  
 
     return _create_survey_response(survey, telemetry, "completed_health_metrics_id", DailyBodyMetricsSurveyResponse)
-
 
 @router.post("/daily-survey/body-metrics/submit", response_model=DailyBodyMetricsSurveyResponse)
 def submit_daily_body_metrics_survey(
@@ -423,14 +426,16 @@ def start_daily_steps_survey(
         raise HTTPException(status_code=404, detail="Client profile not found")
 
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyStepsSurvey)
-    if survey.is_started:
-        raise HTTPException(status_code=400, detail="Survey already started")
 
-    survey.is_started = True
-    survey.is_seen = True
-    db.add(survey)
-    db.commit()
-    db.refresh(survey)
+    if survey.is_finished:
+        raise HTTPException(status_code=400, detail="Survey has already been submitted")
+    
+    if not survey.is_started:
+        survey.is_started = True
+        survey.is_seen = True
+        db.add(survey)
+        db.commit()
+        db.refresh(survey)
 
     return _create_survey_response(survey, telemetry, "step_count_id", DailyStepsSurveyResponse)
 
@@ -488,14 +493,16 @@ def start_daily_meal_survey(
         raise HTTPException(status_code=404, detail="Client profile not found")
 
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyMealSurvey)
-    if survey.is_started:
-        raise HTTPException(status_code=400, detail="Survey already started")
-
-    survey.is_started = True
-    survey.is_seen = True
-    db.add(survey)
-    db.commit()
-    db.refresh(survey)
+    
+    if survey.is_finished:
+        raise HTTPException(status_code=400, detail="Survey has already been submitted")
+    
+    if not survey.is_started:
+        survey.is_started = True
+        survey.is_seen = True
+        db.add(survey)
+        db.commit()
+        db.refresh(survey)
 
     return _create_survey_response(survey, telemetry, "completed_meal_activity_id", DailyMealSurveyResponse)
 

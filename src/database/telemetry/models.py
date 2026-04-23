@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
+from pydantic import field_validator
 from sqlmodel import Field
 
 from src.database.base import SQLModelLU
@@ -62,6 +63,11 @@ class HealthMetrics(SQLModelLU, table=True):
     progress_pic_url: Optional[str] = None
     client_telemetry_id: int = Field(foreign_key="client_telemetry.id", ondelete="CASCADE")
 
+    @field_validator("weight")
+    def weight_must_be_positive(cls, v):
+        if v <= 0:
+            raise ValueError("Weight must be a positive integer")
+        return v
 
 class DailyWorkoutSurvey(SQLModelLU, table=True):
     __tablename__ = "daily_workout_survey"  # type: ignore

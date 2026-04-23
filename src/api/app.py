@@ -14,6 +14,7 @@ from src.api.roles.coach.coach import router as coach_router
 from src.api.roles.client.client import router as client_router
 from src.api.roles.shared.fitness import router as shared_fitness_router
 from src.api.roles.client.fitness import router as client_fitness_router
+from src.api.roles.client.telemetry import router as client_telemetry_router
 from src.api.roles.coach.fitness import router as coach_fitness_router
 from src.api.roles.admin.admin import router as admin_router
 
@@ -32,6 +33,7 @@ app.include_router(coach_router)
 app.include_router(client_router)
 app.include_router(shared_fitness_router)
 app.include_router(client_fitness_router)
+app.include_router(client_telemetry_router)
 app.include_router(coach_fitness_router)
 app.include_router(admin_router)
 
