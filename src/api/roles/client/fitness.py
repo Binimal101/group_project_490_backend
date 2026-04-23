@@ -51,8 +51,22 @@ class BodyMetricsSurveySubmitPayload(SQLModel):
     weight: int
     progress_pic_url: Optional[str] = None
 
+    @field_validator("weight")
+    @classmethod
+    def validate_weight(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("Weight must be greater than 0")
+        return v
+
 class StepsSurveySubmitPayload(SQLModel):
     step_count: int
+
+    @field_validator("step_count")
+    @classmethod
+    def validate_step_count(cls, v: int) -> int:
+        if v < 0 or v > 100000:
+            raise ValueError("Step count must be between 0 and 100000")
+        return v
 
 class MealSurveySubmitPayload(SQLModel):
     client_prescribed_meal_id: Optional[int] = None
@@ -106,7 +120,7 @@ class DailyMealSurveyResponse(SQLModel):
 
 
 def _get_or_create_telemetry(db: Session, client_id: int) -> ClientTelemetry:
-    today = datetime.utcnow().date()
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     telemetry = db.exec(
         select(ClientTelemetry).where(
             ClientTelemetry.client_id == client_id,
@@ -237,14 +251,14 @@ def submit_daily_survey(
         todays_appreciation=payload.todays_appreciation
     )
     db.add(completed_survey)
-    db.commit()
-    db.refresh(completed_survey)
+    db.flush()
 
     survey.is_finished = True
     survey.completed_survey_id = completed_survey.id
-    
     db.add(survey)
+
     db.commit()
+    db.refresh(completed_survey)
     db.refresh(survey)
 
     return DailySurveyResponse(
@@ -326,13 +340,15 @@ def submit_daily_workout_survey(
         client_telemetry_id=telemetry.id,
     )
     db.add(completed_workout)
-    db.commit()
-    db.refresh(completed_workout)
+    db.flush()
 
     survey.is_finished = True
     survey.completed_workout_id = completed_workout.id
     db.add(survey)
+
     db.commit()
+    db.refresh(completed_workout_details)
+    db.refresh(completed_workout)
     db.refresh(survey)
 
     return _create_survey_response(survey, telemetry, "completed_workout_id", DailyWorkoutSurveyResponse)
@@ -393,13 +409,13 @@ def submit_daily_body_metrics_survey(
         client_telemetry_id=telemetry.id,
     )
     db.add(health_metrics)
-    db.commit()
-    db.refresh(health_metrics)
-
+    db.flush()
+    
     survey.is_finished = True
     survey.completed_health_metrics_id = health_metrics.id
     db.add(survey)
     db.commit()
+    db.refresh(health_metrics)
     db.refresh(survey)
 
     return _create_survey_response(survey, telemetry, "completed_health_metrics_id", DailyBodyMetricsSurveyResponse)
@@ -460,13 +476,13 @@ def submit_daily_steps_survey(
         client_telemetry_id=telemetry.id,
     )
     db.add(step_count)
-    db.commit()
-    db.refresh(step_count)
+    db.flush()
 
     survey.is_finished = True
     survey.step_count_id = step_count.id
     db.add(survey)
     db.commit()
+    db.refresh(step_count)
     db.refresh(survey)
 
     return _create_survey_response(survey, telemetry, "step_count_id", DailyStepsSurveyResponse)
@@ -528,13 +544,13 @@ def submit_daily_meal_survey(
         client_telemetry_id=telemetry.id,
     )
     db.add(completed_meal)
-    db.commit()
-    db.refresh(completed_meal)
+    db.flush()
 
     survey.is_finished = True
     survey.completed_meal_activity_id = completed_meal.id
     db.add(survey)
     db.commit()
+    db.refresh(completed_meal)
     db.refresh(survey)
 
     return _create_survey_response(survey, telemetry, "completed_meal_activity_id", DailyMealSurveyResponse)
