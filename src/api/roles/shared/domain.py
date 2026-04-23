@@ -2,6 +2,8 @@ from decimal import Decimal
 from typing import List, Optional
 from pydantic import BaseModel, model_validator
 
+from src.database.coach_client_relationship.models import ChatMessage
+
 class WorkoutPlanActivityInput(BaseModel):
     workout_activity_id: int
     planned_duration: Optional[int] = None
@@ -32,14 +34,29 @@ class CreateWorkoutPlanInput(BaseModel):
     strata_name: str
     activities: List[WorkoutPlanActivityInput]
 
-class CreateWorkoutPlanResponse(BaseModel):
-    workout_plan_id: int
+class CreateNewChatInput(BaseModel):
+    relationship_id: int
+
 
 
 #Responses
+class CreateWorkoutPlanResponse(BaseModel):
+    workout_plan_id: int
 
+class NewChatResponse(BaseModel):
+    chat_id: int
 
+class SendMessageResponse(BaseModel):
+    message_id: int
+    message_text: str
+    from_account_id: int
+
+class GetMessagesResponse(BaseModel):
+    messages: List[ChatMessage]
 
 class DeleteRequestResponse(BaseModel):
     message: str = "Request deleted successfully"
+
+class DunderResponse(BaseModel):
+    details: str = "success"
 
