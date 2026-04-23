@@ -3,11 +3,14 @@ from typing import Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import field_validator, model_validator
 from sqlmodel import Session, select, SQLModel
+from sqlalchemy.exc import IntegrityError
 
 from src.database.session import get_session
+from src.database.workouts_and_activities.models import WorkoutPlanActivity
 from src.database.account.models import Account
 from src.api.dependencies import get_client_account, PaginationParams
 from src.database.client.models import ClientWorkoutPlan 
+from src.database.meals.models import ClientPrescribedMeal
 from src.database.telemetry.models import (
     ClientTelemetry, 
     DailyMoodSurvey, 
@@ -46,6 +49,33 @@ class WorkoutSurveySubmitPayload(SQLModel):
     completed_sets: Optional[int] = None
     completed_duration: Optional[int] = None
     estimated_calories: Optional[int] = None
+
+    @field_validator("completed_reps", "completed_sets", "completed_duration", "estimated_calories")
+    @classmethod
+    def validate_non_negative_metrics(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("Workout values cannot be negative")
+        return v
+
+    @model_validator(mode="after")
+    def validate_workout_submission(self):
+        if self.workout_plan_activity_id is None and self.workout_activity_id is None:
+            raise ValueError("Either workout_plan_activity_id or workout_activity_id is required")
+
+        has_progress_data = any(
+            value is not None
+            for value in [
+                self.completed_reps,
+                self.completed_sets,
+                self.completed_duration,
+                self.estimated_calories,
+            ]
+        )
+
+        if not has_progress_data:
+            raise ValueError("At least one of completed_reps, completed_sets, completed_duration, or estimated_calories is required")
+
+        return self
 
 class BodyMetricsSurveySubmitPayload(SQLModel):
     weight: int
@@ -118,6 +148,41 @@ class DailyMealSurveyResponse(SQLModel):
     is_finished: bool
     completed_meal_activity_id: Optional[int] = None
 
+def _validate_workout_plan_activity_belongs_to_client(db: Session, client_id: int, workout_plan_activity_id: int):
+    workout_plan = db.exec(select(ClientWorkoutPlan).where(ClientWorkoutPlan.client_id == client_id)).all()
+
+    allowed_plan_ids = [plan.id for plan in workout_plan]
+
+    if not allowed_plan_ids:
+        raise HTTPException(status_code=403, detail="No workout plans found for this client")
+
+    workout_plan_activity = db.exec(
+        select(WorkoutPlanActivity).where(
+            WorkoutPlanActivity.id == workout_plan_activity_id,
+            WorkoutPlanActivity.workout_plan_id.in_(allowed_plan_ids)
+        )
+    ).first()
+
+    if workout_plan_activity is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Workout plan activity does not belong to this client"
+        )
+
+    return workout_plan_activity
+
+def _validate_client_prescribed_meal_belongs_to_client(db: Session, client_id: int, client_prescribed_meal_id: int):
+    prescribed_meal = db.exec(
+        select(ClientPrescribedMeal).where(
+            ClientPrescribedMeal.id == client_prescribed_meal_id,
+            ClientPrescribedMeal.client_id == client_id
+        )
+    ).first()
+
+    if prescribed_meal is None:
+        raise HTTPException(status_code=403,detail="Prescribed meal does not belong to this client")
+
+    return prescribed_meal
 
 def _get_or_create_telemetry(db: Session, client_id: int) -> ClientTelemetry:
     today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -128,13 +193,29 @@ def _get_or_create_telemetry(db: Session, client_id: int) -> ClientTelemetry:
         )
     ).first()
 
-    if telemetry is None:
-        telemetry = ClientTelemetry(client_id=client_id, date=today)
-        db.add(telemetry)
+    if telemetry is not None:
+        return telemetry
+
+    telemetry = ClientTelemetry(client_id=client_id, date=today)
+    db.add(telemetry)
+
+    try:
         db.commit()
         db.refresh(telemetry)
+        return telemetry
+    except IntegrityError:
+        db.rollback()
+        telemetry = db.exec(
+            select(ClientTelemetry).where(
+                ClientTelemetry.client_id == client_id,
+                ClientTelemetry.date == today
+            )
+        ).first()
 
-    return telemetry
+        if telemetry is None:
+            raise
+
+        return telemetry
 
 
 def _get_or_create_daily_survey(db: Session, client_id: int, survey_model):
@@ -145,13 +226,33 @@ def _get_or_create_daily_survey(db: Session, client_id: int, survey_model):
         )
     ).first()
 
-    if survey is None:
-        survey = survey_model(is_seen=True, is_started=False, is_finished=False, client_telemetry_id=telemetry.id)
-        db.add(survey)
+    if survey is not None:
+        return telemetry, survey
+
+    survey = survey_model(
+        is_seen=True,
+        is_started=False,
+        is_finished=False,
+        client_telemetry_id=telemetry.id
+    )
+    db.add(survey)
+
+    try:
         db.commit()
         db.refresh(survey)
+        return telemetry, survey
+    except IntegrityError:
+        db.rollback()
+        survey = db.exec(
+            select(survey_model).where(
+                survey_model.client_telemetry_id == telemetry.id
+            )
+        ).first()
 
-    return telemetry, survey
+        if survey is None:
+            raise
+
+        return telemetry, survey
 
 
 def _create_survey_response(survey, telemetry, completed_key: str, response_model):
@@ -317,6 +418,9 @@ def submit_daily_workout_survey(
 ):
     if acc.client_id is None:
         raise HTTPException(status_code=404, detail="Client profile not found")
+
+    if payload.workout_plan_activity_id is not None:
+        _validate_workout_plan_activity_belongs_to_client(db, acc.client_id, payload.workout_plan_activity_id)
 
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyWorkoutSurvey)
     if not survey.is_started:
@@ -529,8 +633,16 @@ def submit_daily_meal_survey(
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
+    
     if acc.client_id is None:
         raise HTTPException(status_code=404, detail="Client profile not found")
+    
+    if payload.client_prescribed_meal_id is not None:
+        _validate_client_prescribed_meal_belongs_to_client(
+            db,
+            acc.client_id,
+            payload.client_prescribed_meal_id
+        )
 
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyMealSurvey)
     if not survey.is_started:
