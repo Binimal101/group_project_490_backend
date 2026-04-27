@@ -45,6 +45,20 @@ app.include_router(admin_router)
 def read_current_account(user = Depends(get_account_from_bearer)):
     return serialize_account(user)
 
+@app.get("/roles")
+def read_current_roles(user = Depends(get_account_from_bearer)):
+    """Returns a list of the current user's roles. Mainly for frontend role-based rendering."""
+    roles: list[str] = []
+
+    if user.client_id is not None:
+        roles.append("client")
+    if user.coach_id is not None:
+        roles.append("coach")
+    if user.admin_id is not None:
+        roles.append("admin")
+
+    return roles
+
 @app.get("/")
 def health():
     return
