@@ -9,7 +9,9 @@ from src import config
 from src.api.auth.services import hash_password
 from src.database.account.models import Account
 from src.database.coach.models import Coach
+from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
 from src.database.session import get_session
+from src.api.roles.shared.domain import ClientCoachContext
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
@@ -97,6 +99,65 @@ def get_admin_account(account: Account = Depends(get_account_from_bearer)):
         raise role_authorization_exception
     else:
         return account #account routes down to role resources
+
+
+#client-coach stateful decoupling
+
+def build_client_coach_contexts(
+    *,
+    account: Account,
+    request: ClientCoachRequest,
+    db: Session,
+) -> dict[str, ClientCoachContext]:
+    if account.id is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if account.client_id == request.client_id:
+        other_account = db.exec(select(Account).where(Account.coach_id == request.coach_id)).first()
+        user_context = ClientCoachContext(id=account.id, is_client=True, is_coach=False)
+        other_context = ClientCoachContext(id=other_account.id, is_client=False, is_coach=True) if other_account and other_account.id is not None else None
+    elif account.coach_id == request.coach_id:
+        other_account = db.exec(select(Account).where(Account.client_id == request.client_id)).first()
+        user_context = ClientCoachContext(id=account.id, is_client=False, is_coach=True)
+        other_context = ClientCoachContext(id=other_account.id, is_client=True, is_coach=False) if other_account and other_account.id is not None else None
+    else:
+        raise HTTPException(status_code=403, detail="Not authorized to use this request")
+
+    if other_context is None:
+        raise HTTPException(status_code=404, detail="Target account not found")
+
+    return {"user": user_context, "other": other_context}
+
+# developer facing DI functions
+
+def client_coach_request_context(
+    request_id: int,
+    db: Session = Depends(get_session),
+    account: Account = Depends(get_account_from_bearer),
+) -> dict[str, ClientCoachContext]:
+    request = db.get(ClientCoachRequest, request_id)
+
+    if request is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    return build_client_coach_contexts(account=account, request=request, db=db)
+
+
+def client_coach_relationship_context(
+    relationship_id: int,
+    db: Session = Depends(get_session),
+    account: Account = Depends(get_account_from_bearer),
+) -> dict[str, ClientCoachContext]:
+    relationship = db.get(ClientCoachRelationship, relationship_id)
+
+    if relationship is None:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+
+    request = db.get(ClientCoachRequest, relationship.request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Associated request not found")
+
+    return build_client_coach_contexts(account=account, request=request, db=db)
 
 # Parametrization dependencies
 

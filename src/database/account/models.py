@@ -3,7 +3,7 @@ from sqlalchemy import Column, Time
 from sqlmodel import Field
 from decimal import Decimal
 from typing import Optional
-from datetime import datetime, time
+from datetime import date, datetime, time
 from enum import Enum
 from pydantic import field_validator, model_validator, EmailStr
 
@@ -58,8 +58,8 @@ class Availability(SQLModelLU, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     weekday: Weekday
-    start_time: time = Field(sa_type=Time(timezone=True), nullable=False)
-    end_time: time = Field(sa_type=Time(timezone=True), nullable=False)
+    start_time: time = Field(sa_column=Column(Time(timezone=True), nullable=False))
+    end_time: time = Field(sa_column=Column(Time(timezone=True), nullable=False))
     max_time_commitment_seconds: Optional[Decimal] = Field(default=None, max_digits=8, decimal_places=2)
     client_availability_id: Optional[int] = Field(default=None, foreign_key="client_availability.id")
     coach_availability_id: Optional[int] = Field(default=None, foreign_key="coach_availability.id")
@@ -71,3 +71,16 @@ class Availability(SQLModelLU, table=True):
         if start_time >= end_time:
             raise HTTPException(status_code=400, detail="start_time must be before end_time")
         return self
+
+class Notification(SQLModelLU, table=True):
+    __tablename__ = "notification"  # type: ignore
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: int = Field(foreign_key="account.id", ondelete="CASCADE")
+    
+    fav_category: Optional[str] = None
+    
+    message: str
+    details: Optional[str] = None # if they do expandable dialogs we have it built in
+    is_read: bool = False
+    created_at: date = Field(default_factory=date.today)
