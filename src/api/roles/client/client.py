@@ -37,6 +37,7 @@ from src.database.telemetry.models import ClientTelemetry
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation
 
+
 router = APIRouter(prefix="/roles/client", tags=["client"])
 
 @router.post("/initial_survey", response_model=CreateClientResponse)

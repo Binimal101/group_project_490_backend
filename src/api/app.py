@@ -17,6 +17,7 @@ from src.api.roles.shared.account import router as shared_account_router
 from src.api.roles.shared.chat import router as shared_chat_router
 from src.api.roles.shared.client_coach_relationship import router as shared_client_coach_relationship_router
 from src.api.roles.client.fitness import router as client_fitness_router
+from src.api.roles.client.telemetry import router as client_telemetry_router
 from src.api.roles.coach.fitness import router as coach_fitness_router
 from src.api.roles.admin.admin import router as admin_router
 
@@ -38,6 +39,7 @@ app.include_router(shared_account_router)
 app.include_router(shared_chat_router)
 app.include_router(shared_client_coach_relationship_router)
 app.include_router(client_fitness_router)
+app.include_router(client_telemetry_router)
 app.include_router(coach_fitness_router)
 app.include_router(admin_router)
 
