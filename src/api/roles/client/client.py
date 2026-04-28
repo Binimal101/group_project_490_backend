@@ -38,10 +38,6 @@ from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation
 
 
-def _today_utc_midnight() -> datetime:
-    return datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-
-
 router = APIRouter(prefix="/roles/client", tags=["client"])
 
 @router.post("/initial_survey", response_model=CreateClientResponse)
