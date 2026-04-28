@@ -33,6 +33,7 @@ from src.database.coach.models import Coach, Experience, Certifications, CoachEx
 from src.database.coach_client_relationship.models import ClientCoachRequest
 from src.database.account.models import Account, Availability, Notification
 from src.database.client.models import Client, ClientAvailability
+from src.database.telemetry.models import HealthMetrics, ClientTelemetry
 from src.database.telemetry.models import ClientTelemetry
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation
@@ -121,9 +122,25 @@ def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_s
 
 @router.post("/me", response_model=ClientAccountResponse)
 def me(db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    client_account = db.get(Client, acc.client_id)
+
+    # fetch latest health metrics (weight, height if present)
+    latest_metrics = None
+    if acc.client_id is not None:
+        query = select(HealthMetrics).join(ClientTelemetry, HealthMetrics.client_telemetry_id == ClientTelemetry.id).where(ClientTelemetry.client_id == acc.client_id).order_by(HealthMetrics.id.desc())
+        latest_metrics = db.exec(query).first()
+
+    weight = None
+    height = None
+    if latest_metrics:
+        weight = getattr(latest_metrics, "weight", None)
+        height = getattr(latest_metrics, "height", None)
+
     return ClientAccountResponse(
         base_account=acc,
-        client_account=db.get(Client, acc.client_id)
+        client_account=client_account,
+        last_recorded_weight=weight,
+        last_recorded_height=height,
     )
 
 
