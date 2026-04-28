@@ -9,8 +9,11 @@ import requests
 from src.api.auth.domain import AuthTokenResponse, LoginRequest, SignupRequest
 from src.api.auth.services import create_account
 from src.api.dependencies import authenticate_user, create_jwt_token
+from src.api.dependencies import get_account_from_bearer
+
 from src.database.account.models import Account
 from src.database.session import get_session
+from src.database.coach.models import Coach
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -19,6 +22,25 @@ def issue_token(user: Account) -> AuthTokenResponse:
     token = create_jwt_token(user)
     return AuthTokenResponse(access_token=token)
 
+@router.get("/roles")
+def read_current_roles(user = Depends(get_account_from_bearer), db = Depends(get_session)):
+    """Returns a list of the current user's roles. Mainly for frontend role-based rendering."""
+    roles: list[str] = []
+
+    if user.client_id is not None:
+        roles.append("client")
+        
+    if user.coach_id is not None:
+        coach = db.get(Coach, user.coach_id)
+        if coach and coach.is_approved:
+            roles.append("coach")
+        elif coach and not coach.is_approved:
+            roles.append("coach_pending_or_denied")
+
+    if user.admin_id is not None:
+        roles.append("admin")
+
+    return roles
 
 @router.post("/signup", response_model=AuthTokenResponse)
 def signup(
