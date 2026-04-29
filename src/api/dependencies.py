@@ -66,6 +66,7 @@ def get_account_from_bearer(
     return user
 
 
+
 """
 ROLE BASED DEPENDENCIES, USE FOR FEATURES / ENDPOINTS THAT REQUIRE THESE ROLES SPECIFICALLY
 """

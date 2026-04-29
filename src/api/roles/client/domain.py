@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, date
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional
 from fastapi import HTTPException
@@ -127,3 +127,23 @@ class ClientAccountResponse(BaseModel):
 
 class DunderResponse(BaseModel):
     details: str = "success"
+
+class ClientInvoiceResponse(BaseModel):
+    invoice_id: int
+    amount: float
+    outstanding_balance: float
+    coach_name: str
+    entry_date: date
+    end_date: date
+
+class ClientInvoicesListResponse(BaseModel):
+    invoices: List[ClientInvoiceResponse]
+
+class ClientBillingCycleResponse(BaseModel):
+    coach_name: str
+    entry_date: date
+    end_date: date
+    active: bool
+
+class ClientBillingCyclesListResponse(BaseModel):
+    cycles: List[ClientBillingCycleResponse]

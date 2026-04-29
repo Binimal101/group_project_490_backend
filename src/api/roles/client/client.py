@@ -24,6 +24,10 @@ from src.api.roles.client.domain import (
     ReportsResponse,
     CoachReviewResponse,
     ReviewsResponse,
+    ClientInvoicesListResponse,
+    ClientInvoiceResponse,
+    ClientBillingCyclesListResponse,
+    ClientBillingCycleResponse,
 )
 
 from src.api.roles.shared.domain import DeleteRequestResponse
@@ -36,7 +40,7 @@ from src.database.client.models import Client, ClientAvailability, FitnessGoals
 from src.database.telemetry.models import HealthMetrics, ClientTelemetry
 from src.database.telemetry.models import ClientTelemetry
 from src.database.reports.models import CoachReport, CoachReviews
-from src.database.payment.models import PaymentInformation
+from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan
 
 
 router = APIRouter(prefix="/roles/client", tags=["client"])
@@ -249,6 +253,64 @@ def rescind_request(request_id: int, db = Depends(get_session), acc: Account = D
     db.commit()
 
     return DeleteRequestResponse()
+
+@router.get("/invoices", response_model=ClientInvoicesListResponse)
+def get_client_invoices(db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Get all invoices for the current client.
+    """
+    invoices_list = []
+    
+    invoices = db.exec(
+        select(Invoice, BillingCycle, PricingPlan, Account)
+        .join(BillingCycle, Invoice.billing_cycle_id == BillingCycle.id)
+        .join(PricingPlan, BillingCycle.pricing_plan_id == PricingPlan.id)
+        .join(Account, PricingPlan.coach_id == Account.coach_id)
+        .where(Invoice.client_id == acc.client_id)
+        .order_by(Invoice.id.desc())
+    ).all()
+
+    for inv, cycle, plan, coach_acc in invoices:
+        invoices_list.append(ClientInvoiceResponse(
+            invoice_id=inv.id,
+            amount=inv.amount,
+            outstanding_balance=inv.outstanding_balance,
+            coach_name=coach_acc.name,
+            entry_date=cycle.entry_date,
+            end_date=cycle.end_date
+        ))
+
+    return ClientInvoicesListResponse(invoices=invoices_list)
+
+@router.get("/current_billing_cycles", response_model=ClientBillingCyclesListResponse)
+def get_current_billing_cycles(db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Get current billing cycles for the active subscriptions of the current client.
+    """
+    cycles_list = []
+    
+    cycles = db.exec(
+        select(BillingCycle, PricingPlan, Account)
+        .join(Subscription, BillingCycle.subscription_id == Subscription.id)
+        .join(PricingPlan, BillingCycle.pricing_plan_id == PricingPlan.id)
+        .join(Account, PricingPlan.coach_id == Account.coach_id)
+        .where(
+            Subscription.client_id == acc.client_id,
+            Subscription.status == "active",
+            BillingCycle.active == True
+        )
+        .order_by(BillingCycle.id.desc())
+    ).all()
+
+    for cycle, plan, coach_acc in cycles:
+        cycles_list.append(ClientBillingCycleResponse(
+            coach_name=coach_acc.name,
+            entry_date=cycle.entry_date,
+            end_date=cycle.end_date,
+            active=cycle.active
+        ))
+
+    return ClientBillingCyclesListResponse(cycles=cycles_list)
 
 @router.post("/upload_progress_picture")
 def upload_progress_picture(file: UploadFile, acc: Account = Depends(get_client_account)):

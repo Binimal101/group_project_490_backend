@@ -1,5 +1,5 @@
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, date
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional
@@ -138,6 +138,11 @@ class WorkoutPlanInput(BaseModel):
 #Responses
 class DunderResponse(BaseModel):
     details: str = "success"
+
+class CoachEarningsResponse(BaseModel):
+    total_earnings: float
+    since: Optional[date] = None
+
 
 
 class ClientRequestItem(BaseModel):
