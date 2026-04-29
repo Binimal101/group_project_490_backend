@@ -6,7 +6,7 @@ from datetime import date
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, Query
 from typing import Optional, List
 from sqlmodel import select
-from sqlalchemy import func, desc, asc
+from sqlalchemy import func, desc, asc, delete
 
 from src import config
 from src.api.dependencies import get_account_from_bearer, get_client_account, PaginationParams
@@ -32,7 +32,8 @@ from src.database.session import get_session
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.coach_client_relationship.models import ClientCoachRequest
 from src.database.account.models import Account, Availability, Notification
-from src.database.client.models import Client, ClientAvailability
+from src.database.client.models import Client, ClientAvailability, FitnessGoals
+from src.database.telemetry.models import HealthMetrics, ClientTelemetry
 from src.database.telemetry.models import ClientTelemetry
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation
@@ -101,29 +102,75 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
 @router.patch("/information", response_model=DunderResponse)
 def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
-    Availabilities: providing availabilities will ADD availability, should REMOVE exisiting availability BEFORE calling this method if batch updating
+    Availabilities: will override current availabilities (delete old records, create new ones)
     Fitness goals will override current reading
     Health metrics appends new record as client_telemetry
     Payment information is overridden
 
-    Will merge timelines for multiple availabilities mapping to the client if new addition intersects
     """
-    if payload.availabilities: 
-        pass
+    client = db.get(Client, acc.client_id)
+
+    # Availabilities: delete existing and replace with new ones
+    if payload.availabilities:
+        ca_id = client.client_availability_id
+        if ca_id is None:
+            ca = ClientAvailability()
+            db.add(ca)
+            db.flush()
+            client.client_availability_id = ca.id
+            ca_id = ca.id
+        else:
+            db.exec(delete(Availability).where(Availability.client_availability_id == ca_id))
+
+        for a in payload.availabilities:
+            a.client_availability_id = ca_id
+            db.add(a)
+
+    # Fitness goals: replace existing goals for the client
     if payload.fitness_goals:
-        pass
-    if payload.health_metrics:
-        pass
+        db.exec(delete(FitnessGoals).where(FitnessGoals.client_id == client.id))
+        payload.fitness_goals.client_id = client.id
+        db.add(payload.fitness_goals)
+
+    # Payment information: replace stored payment info
     if payload.payment_information:
-        pass
+        db.add(payload.payment_information)
+        db.flush()
+        client.payment_information_id = payload.payment_information.id
+
+    # Health metrics: append a new telemetry record and attach the metrics
+    if payload.health_metrics:
+        telem = ClientTelemetry(client_id=client.id, date=date.today())
+        db.add(telem)
+        db.flush()
+        payload.health_metrics.client_telemetry_id = telem.id
+        db.add(payload.health_metrics)
+
+    db.commit()
 
     return DunderResponse()
 
 @router.post("/me", response_model=ClientAccountResponse)
 def me(db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    client_account = db.get(Client, acc.client_id)
+
+    # fetch latest health metrics (weight, height if present)
+    latest_metrics = None
+    if acc.client_id is not None:
+        query = select(HealthMetrics).join(ClientTelemetry, HealthMetrics.client_telemetry_id == ClientTelemetry.id).where(ClientTelemetry.client_id == acc.client_id).order_by(HealthMetrics.id.desc())
+        latest_metrics = db.exec(query).first()
+
+    weight = None
+    height = None
+    if latest_metrics:
+        weight = getattr(latest_metrics, "weight", None)
+        height = getattr(latest_metrics, "height", None)
+
     return ClientAccountResponse(
         base_account=acc,
-        client_account=db.get(Client, acc.client_id)
+        client_account=client_account,
+        last_recorded_weight=weight,
+        last_recorded_height=height,
     )
 
 

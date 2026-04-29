@@ -35,6 +35,7 @@ from src.database.workouts_and_activities.models import Workout, WorkoutEquiptme
 from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
 from src.database.session import get_session
 from src.database.account.models import Account, Availability, Notification
+from src.database.telemetry.models import HealthMetrics, ClientTelemetry
 from src.database.coach.models import Coach, CoachCertifications, CoachExperience, CoachAvailability, Experience, Certifications
 from src.database.client.models import Client, FitnessGoals
 from src.database.role_management.models import CoachRequest
@@ -146,9 +147,23 @@ def update_coach_info(new_coach_details: UpdateCoachInfoInput, db = Depends(get_
 
 @router.post("/me", response_model=CoachAccountResponse)
 def me(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
+    coach_account = db.get(Coach, acc.coach_id)
+
+    # if the account is also a client, fetch latest health metrics
+    weight = None
+    height = None
+    if acc.client_id is not None:
+        query = select(HealthMetrics).join(ClientTelemetry, HealthMetrics.client_telemetry_id == ClientTelemetry.id).where(ClientTelemetry.client_id == acc.client_id).order_by(HealthMetrics.id.desc())
+        latest_metrics = db.exec(query).first()
+        if latest_metrics:
+            weight = getattr(latest_metrics, "weight", None)
+            height = getattr(latest_metrics, "height", None)
+
     return CoachAccountResponse(
         base_account=acc,
-        coach_account=db.get(Coach, acc.coach_id)
+        coach_account=coach_account,
+        last_recorded_weight=weight,
+        last_recorded_height=height,
     )
 
 @router.post("/create_workout", response_model=DunderResponse)
