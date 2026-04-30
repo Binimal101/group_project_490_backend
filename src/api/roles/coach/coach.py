@@ -29,6 +29,8 @@ from src.api.roles.coach.domain import (
     ClientReportResponse,
     ReportsResponse,
     CoachEarningsResponse,
+    PrescribeWorkoutPlanInput,
+    PrescribeWorkoutPlanResponse,
 )
 
 from src.database import coach
@@ -39,7 +41,7 @@ from src.database.session import get_session
 from src.database.account.models import Account, Availability, Notification
 from src.database.telemetry.models import HealthMetrics, ClientTelemetry
 from src.database.coach.models import Coach, CoachCertifications, CoachExperience, CoachAvailability, Experience, Certifications
-from src.database.client.models import Client, FitnessGoals
+from src.database.client.models import Client, FitnessGoals, ClientWorkoutPlan
 from src.database.role_management.models import CoachRequest
 from src.database.reports.models import ClientReport
 
@@ -247,6 +249,65 @@ def create_workout_plan(plan_details: WorkoutPlanInput, db = Depends(get_session
     db.commit()
 
     return DunderResponse()
+
+@router.post("/prescribe_plan", response_model=PrescribeWorkoutPlanResponse)
+def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_coach_account)):
+    """
+    Assigns a workout plan to one of the coach's active clients.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+
+    plan = db.get(WorkoutPlan, payload.workout_plan_id)
+    if plan is None:
+        raise HTTPException(404, detail="Workout plan not found")
+
+    client = db.get(Client, payload.client_id)
+    if client is None:
+        raise HTTPException(404, detail="Client not found")
+
+    request = db.exec(select(ClientCoachRequest).where(
+        ClientCoachRequest.client_id == payload.client_id,
+        ClientCoachRequest.coach_id == acc.coach_id,
+        ClientCoachRequest.is_accepted == True
+    )).first()
+    if request is None or request.id is None:
+        raise HTTPException(403, detail="Coach does not have an active relationship with this client")
+
+    relationship = db.exec(select(ClientCoachRelationship).where(
+        ClientCoachRelationship.request_id == request.id,
+        ClientCoachRelationship.is_active == True,
+        ClientCoachRelationship.coach_blocked == False,
+        ClientCoachRelationship.client_blocked == False
+    )).first()
+    if relationship is None:
+        raise HTTPException(403, detail="Coach does not have an active relationship with this client")
+
+    client_workout_plan = ClientWorkoutPlan(
+        client_id=payload.client_id,
+        workout_plan_id=payload.workout_plan_id,
+        start_time=payload.start_dt,
+        end_time=payload.end_dt
+    )
+    db.add(client_workout_plan)
+    db.flush()
+
+    client_account = db.exec(select(Account).where(Account.client_id == payload.client_id)).first()
+    if client_account and client_account.id is not None:
+        db.add(Notification(
+            account_id=client_account.id,
+            fav_category="workout_plan",
+            message=f"{acc.name} prescribed a new workout plan.",
+            details=f"Workout plan {payload.workout_plan_id} is scheduled from {payload.start_dt.isoformat()} to {payload.end_dt.isoformat()}.",
+        ))
+
+    db.commit()
+    db.refresh(client_workout_plan)
+
+    if client_workout_plan.id is None:
+        raise HTTPException(500, detail="Something went wrong while prescribing the workout plan")
+
+    return PrescribeWorkoutPlanResponse(client_workout_plan_id=client_workout_plan.id)
 
 @router.get("/coach_availability/{coach_id}", response_model=CoachAvailabilityResponse)
 def get_coach_availability(coach_id: int, db = Depends(get_session), acc: Account = Depends(get_client_account)):

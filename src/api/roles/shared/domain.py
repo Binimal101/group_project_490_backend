@@ -1,6 +1,7 @@
+from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, EmailStr, EmailStr, model_validator
 
 from src.database.account.models import Account
 from src.database.coach_client_relationship.models import ChatMessage
@@ -50,7 +51,12 @@ class ClientCoachContext(BaseModel):
             raise ValueError("Context user must be either client or coach in the relationship")
         return data
 
-
+class UpdateAccountInput(BaseModel):
+    age: Optional[int] = None
+    email: Optional[EmailStr] = None
+    bio: Optional[str] = None
+    pfp_url: Optional[str] = None
+    gender: Optional[str] = None
 
 #Responses
 class CreateWorkoutPlanResponse(BaseModel):
@@ -58,6 +64,25 @@ class CreateWorkoutPlanResponse(BaseModel):
 
 class NewChatResponse(BaseModel):
     chat_id: int
+
+class FullProfileResponse(BaseModel):
+    account: Account
+    roles: List[str]
+    client_details: Optional[dict] = None
+    coach_details: Optional[dict] = None
+
+class AccountResponse(BaseModel):
+    id: int
+    name: str
+    email: EmailStr
+    gender: Optional[str] = None
+    bio: Optional[str] = None
+    age: Optional[int] = None
+    pfp_url: Optional[str] = None
+    client_id: Optional[int] = None
+    coach_id: Optional[int] = None
+    admin_id: Optional[int] = None
+    created_at: Optional[datetime] = None
 
 class SendMessageResponse(BaseModel):
     message_id: int

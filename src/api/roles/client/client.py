@@ -1,6 +1,3 @@
-import os
-
-import requests
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, Query
@@ -8,8 +5,8 @@ from typing import Optional, List
 from sqlmodel import select
 from sqlalchemy import func, desc, asc, delete
 
-from src import config
 from src.api.dependencies import get_account_from_bearer, get_client_account, PaginationParams
+from src.api.storage import upload_public_file_to_supabase
 
 #models
 from src.api.roles.client.domain import (
@@ -28,6 +25,8 @@ from src.api.roles.client.domain import (
     ClientInvoiceResponse,
     ClientBillingCyclesListResponse,
     ClientBillingCycleResponse,
+    AssignWorkoutPlanInput,
+    AssignWorkoutPlanResponse,
 )
 
 from src.api.roles.shared.domain import DeleteRequestResponse
@@ -36,7 +35,8 @@ from src.database.session import get_session
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.coach_client_relationship.models import ClientCoachRequest
 from src.database.account.models import Account, Availability, Notification
-from src.database.client.models import Client, ClientAvailability, FitnessGoals
+from src.database.client.models import Client, ClientAvailability, FitnessGoals, ClientWorkoutPlan
+from src.database.workouts_and_activities.models import WorkoutPlan
 from src.database.telemetry.models import HealthMetrics, ClientTelemetry
 from src.database.telemetry.models import ClientTelemetry
 from src.database.reports.models import CoachReport, CoachReviews
@@ -176,6 +176,33 @@ def me(db = Depends(get_session), acc: Account = Depends(get_client_account)):
         last_recorded_weight=weight,
         last_recorded_height=height,
     )
+
+@router.post("/assign_plan", response_model=AssignWorkoutPlanResponse)
+def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Assigns a workout plan to the authenticated client.
+    """
+    if acc.client_id is None:
+        raise HTTPException(404, detail="Client profile not found")
+
+    plan = db.get(WorkoutPlan, payload.workout_plan_id)
+    if plan is None:
+        raise HTTPException(404, detail="Workout plan not found")
+
+    client_workout_plan = ClientWorkoutPlan(
+        client_id=acc.client_id,
+        workout_plan_id=payload.workout_plan_id,
+        start_time=payload.start_dt,
+        end_time=payload.end_dt
+    )
+    db.add(client_workout_plan)
+    db.commit()
+    db.refresh(client_workout_plan)
+
+    if client_workout_plan.id is None:
+        raise HTTPException(500, detail="Something went wrong while assigning the workout plan")
+
+    return AssignWorkoutPlanResponse(client_workout_plan_id=client_workout_plan.id)
 
 
 
@@ -319,30 +346,7 @@ def upload_progress_picture(file: UploadFile, acc: Account = Depends(get_client_
     This endpoint intentionally does not modify the database yet.
     """
 
-    SUPABASE_URL = config.SUPABASE_URL or os.getenv("SUPABASE_URL")
-    SUPABASE_SERVICE_KEY = config.SUPABASE_SERVICE_KEY or os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
-
-    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        raise HTTPException(500, detail="Supabase storage is not configured on the server")
-
-    bucket = "progress_picture"
-    filename = f"{acc.id}_{file.filename}"
-    upload_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{bucket}/{filename}"
-
-    headers = {
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "apikey": SUPABASE_SERVICE_KEY,
-    }
-
-    try:
-        resp = requests.put(upload_url, data=file.file, headers=headers)
-    except Exception as e:
-        raise HTTPException(500, detail=f"Upload failed: {e}")
-
-    if resp.status_code not in (200, 201, 204):
-        raise HTTPException(resp.status_code, detail=f"Upload failed: {resp.text}")
-
-    public_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{bucket}/{filename}"
+    public_url = upload_public_file_to_supabase(file, "progress_picture", str(acc.id))
     return {"url": public_url}
 
 

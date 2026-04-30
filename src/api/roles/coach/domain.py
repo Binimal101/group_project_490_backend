@@ -135,6 +135,15 @@ class WorkoutPlanInput(BaseModel):
     strata_name: str
     workout_activities: Optional[List[WorkoutPlanActivity]] = Field(default=None)
 
+class PrescribeWorkoutPlanInput(BaseModel):
+    workout_plan_id: int
+    client_id: int
+    start_dt: datetime
+    end_dt: datetime
+
+class PrescribeWorkoutPlanResponse(BaseModel):
+    client_workout_plan_id: int
+
 #Responses
 class DunderResponse(BaseModel):
     details: str = "success"
