@@ -25,7 +25,7 @@ from src.api.roles.client.domain import (
     CoachReviewResponse,
     ReviewsResponse,
     MyCoachResponse,
-    MyCoachRequestsResponse
+    MyCoachRequestsResponse,
     ClientInvoicesListResponse,
     ClientInvoiceResponse,
     ClientBillingCyclesListResponse,
