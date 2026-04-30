@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import datetime, date, timedelta
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from src.api.dependencies import get_coach_account, get_client_account, get_admin_account
 
 # query helpers
@@ -27,18 +28,22 @@ from src.api.roles.coach.domain import (
     ClientLookupResponse,
     ClientReportResponse,
     ReportsResponse,
+    CoachEarningsResponse,
 )
 
 from src.database import coach
-from src.database.payment.models import PricingPlan, Subscription
+from src.database.payment.models import PricingPlan, Subscription, BillingCycle, Invoice, PricingInterval
 from src.database.workouts_and_activities.models import Workout, WorkoutEquiptment, WorkoutActivity, WorkoutPlan, WorkoutPlanActivity
 from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
 from src.database.session import get_session
 from src.database.account.models import Account, Availability, Notification
+from src.database.telemetry.models import HealthMetrics, ClientTelemetry
 from src.database.coach.models import Coach, CoachCertifications, CoachExperience, CoachAvailability, Experience, Certifications
 from src.database.client.models import Client, FitnessGoals
 from src.database.role_management.models import CoachRequest
 from src.database.reports.models import ClientReport
+
+from sqlmodel import func
 
 router = APIRouter(prefix="/roles/coach", tags=["coach"])
 
@@ -146,9 +151,23 @@ def update_coach_info(new_coach_details: UpdateCoachInfoInput, db = Depends(get_
 
 @router.post("/me", response_model=CoachAccountResponse)
 def me(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
+    coach_account = db.get(Coach, acc.coach_id)
+
+    # if the account is also a client, fetch latest health metrics
+    weight = None
+    height = None
+    if acc.client_id is not None:
+        query = select(HealthMetrics).join(ClientTelemetry, HealthMetrics.client_telemetry_id == ClientTelemetry.id).where(ClientTelemetry.client_id == acc.client_id).order_by(HealthMetrics.id.desc())
+        latest_metrics = db.exec(query).first()
+        if latest_metrics:
+            weight = getattr(latest_metrics, "weight", None)
+            height = getattr(latest_metrics, "height", None)
+
     return CoachAccountResponse(
         base_account=acc,
-        coach_account=db.get(Coach, acc.coach_id)
+        coach_account=coach_account,
+        last_recorded_weight=weight,
+        last_recorded_height=height,
     )
 
 @router.post("/create_workout", response_model=DunderResponse)
@@ -377,9 +396,33 @@ def accept_coach_request(request_id: int, db = Depends(get_session), acc: Accoun
 
     pricing_plan = db.query(PricingPlan).filter(PricingPlan.coach_id == request.coach_id).first()
 
-    db.add(Subscription(client_id=request.client_id,
-        pricing_plan_id = pricing_plan.id,
-    ))
+    subscription = Subscription(client_id=request.client_id, pricing_plan_id=pricing_plan.id)
+    db.add(subscription)
+    db.flush()
+
+    # create initial billing cycle for the subscription
+    start = date.today()
+    if pricing_plan.payment_interval == PricingInterval.MONTHLY:
+        end = start + timedelta(days=30)
+    else:
+        end = start + timedelta(days=365)
+
+    billing_cycle = BillingCycle(active=True, entry_date=start, end_date=end, subscription_id=subscription.id, pricing_plan_id=pricing_plan.id)
+    db.add(billing_cycle)
+    db.flush()
+
+    # create initial invoice for the billing cycle
+    amount = float(pricing_plan.price_cents) / 100.0
+    invoice = Invoice(billing_cycle_id=billing_cycle.id, client_id=request.client_id, amount=amount, outstanding_balance=amount)
+    db.add(invoice)
+
+    # notify both client and coach about the new invoice/payment issued
+    client_account = db.exec(select(Account).where(Account.client_id == request.client_id)).first()
+    coach_account = db.exec(select(Account).where(Account.coach_id == request.coach_id)).first()
+    if client_account and client_account.id is not None:
+        db.add(Notification(account_id=client_account.id, fav_category="payment", message=f"A new invoice of ${amount:.2f} was issued.", details=f"Invoice {invoice.id} for billing cycle {billing_cycle.id}."))
+    if coach_account and coach_account.id is not None:
+        db.add(Notification(account_id=coach_account.id, fav_category="payment", message=f"Your client was invoiced ${amount:.2f}.", details=f"Invoice {invoice.id} for client {request.client_id}."))
 
     db.commit()
     
@@ -462,3 +505,32 @@ def get_reports(client_id: int, db = Depends(get_session), acc: Account = Depend
     reports = db.query(ClientReport).filter(ClientReport.client_id == client_id).all()
 
     return ReportsResponse(reports=reports)
+
+@router.get("/earnings", response_model=CoachEarningsResponse)
+def get_coach_earnings(
+    since: Optional[date] = Query(None, description="Calculate earnings since this date"),
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account)
+):
+    """
+    Calculate the total money made by a coach (amount paid on invoices) optionally since a given date
+    """
+    if acc.coach_id is None:
+        raise HTTPException(403, detail="Not authorized")
+    
+    # an invoice represents earnings. (Amount - outstanding_balance) is the paid amount.
+    query = (
+        select(func.sum(Invoice.amount - Invoice.outstanding_balance))
+        .select_from(Invoice)
+        .join(BillingCycle, Invoice.billing_cycle_id == BillingCycle.id)
+        .join(PricingPlan, BillingCycle.pricing_plan_id == PricingPlan.id)
+        .where(PricingPlan.coach_id == acc.coach_id)
+    )
+
+    if since:
+        query = query.where(BillingCycle.entry_date >= since)
+
+    result = db.exec(query).first()
+    total = float(result) if result is not None else 0.0
+
+    return CoachEarningsResponse(total_earnings=total, since=since)

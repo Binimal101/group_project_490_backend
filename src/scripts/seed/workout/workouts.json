@@ -50,8 +50,7 @@
       { "intensity_measure": "lbs", "intensity_value": 24, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.06 },
       { "intensity_measure": "lbs", "intensity_value": 16, "unit_frequency": "seconds", "estimated_calories_per_unit_frequency": 0.035 }
     ]
-  }
-  ,
+  },
   {
     "name": "Pull Ups",
     "description": "Upper-body pulling exercise.",

@@ -10,9 +10,23 @@ from src.database.coach.models import Coach, Experience, Certifications, CoachEx
 from src.database.admin.models import Admin
 from src.api.dependencies import get_admin_account, PaginationParams
 from src.database.role_management.models import CoachRequest, RolePromotionResolution, Roles
-from src.api.roles.admin.domain import ResolveCoachRequestInput, PotentialCoachItem
+from src.database.payment.models import Invoice
+from src.api.roles.admin.domain import ResolveCoachRequestInput, PotentialCoachItem, AdminTransactionsResponse
+
+from sqlmodel import func
 
 router = APIRouter(prefix="/roles/admin", tags=["admin"])
+
+@router.get("/total_transactions", response_model=AdminTransactionsResponse)
+def get_total_transactions(db = Depends(get_session), acc: Account = Depends(get_admin_account)):
+    """
+    Get all money transacted on the website (sum of all paid invoice amounts minus their outstanding balance)
+    """
+    
+    result = db.exec(select(func.sum(Invoice.amount - Invoice.outstanding_balance))).first()
+    total = float(result) if result is not None else 0.0
+
+    return AdminTransactionsResponse(total_transacted=total)
 
 @router.get("/query/coach_requests", response_model=List[PotentialCoachItem])
 def query_coach_requests(

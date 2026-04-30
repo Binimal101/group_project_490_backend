@@ -4,7 +4,7 @@ from src import config
 
 from src.database.session import get_session
 from src.database.account.models import Account
-from src.api.dependencies import get_account_from_bearer
+from src.api.dependencies import get_account_from_bearer, get_active_account, get_account_even_if_inactive
 from sqlmodel import Session
 from pydantic import BaseModel, EmailStr
 from typing import Optional
@@ -83,11 +83,60 @@ class AccountResponse(BaseModel):
     created_at: Optional[datetime] = None
 
 
+class DeactivateAccountResponse(BaseModel):
+    success: bool
+    message: str
+
+class ActivateAccountResponse(BaseModel):
+    success: bool
+    message: str
+
+
+@router.post("/deactivate", response_model=DeactivateAccountResponse)
+def deactivate_account(
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """
+    Deactivate the current user's account. This sets is_active to False and prevents login/access.
+    """
+    account = db.get(Account, acc.id)
+    if account is None:
+        raise HTTPException(404, detail="Account not found")
+    if not account.is_active:
+        return DeactivateAccountResponse(success=False, message="Account is already deactivated.")
+    account.is_active = False
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    return DeactivateAccountResponse(success=True, message="Account deactivated successfully.")
+
+
+@router.post("/activate", response_model=ActivateAccountResponse)
+def activate_account(
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_account_even_if_inactive),
+):
+    """
+    Activate the current user's account. This sets is_active to True and allows login/access.
+    """
+    account = db.get(Account, acc.id)
+    if account is None:
+        raise HTTPException(404, detail="Account not found")
+    if account.is_active:
+        return ActivateAccountResponse(success=False, message="Account is already active.")
+    account.is_active = True
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    return ActivateAccountResponse(success=True, message="Account activated successfully.")
+
+
 @router.patch("/update", response_model=AccountResponse)
 def update_account(
     payload: UpdateAccountInput,
     db: Session = Depends(get_session),
-    acc: Account = Depends(get_account_from_bearer),
+    acc: Account = Depends(get_active_account),
 ):
     """
     Update mutable fields on the current user's Account: `age`, `email`, `bio`, `pfp_url`, and `gender`.

@@ -19,6 +19,9 @@ class PotentialCoachItem(BaseModel):
             self.id = self.coach_request_id
         return self
 
+class AdminTransactionsResponse(BaseModel):
+    total_transacted: float
+
 class ResolveCoachRequestInput(BaseModel):
     coach_request_id: int
     is_approved: bool
