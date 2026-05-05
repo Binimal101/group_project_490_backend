@@ -1,0 +1,192 @@
+[
+  {
+    "account": {
+      "name": "Emma Rivera",
+      "email": "emma.rivera@example.com",
+      "password": "StrongPass1!",
+      "gender": "female",
+      "age": 32,
+      "bio": "Strength coach specializing in hypertrophy and functional training.",
+      "pfp_url": "https://example.com/avatars/emma.png"
+    },
+    "coach_details": {
+      "specialties": ["strength training", "hypertrophy", "functional fitness"],
+      "availabilities": [
+        { "weekday": "monday", "start_time": "08:00:00", "end_time": "12:00:00", "max_time_commitment_seconds": 3600 },
+        { "weekday": "wednesday", "start_time": "14:00:00", "end_time": "18:00:00", "max_time_commitment_seconds": 3600 }
+      ],
+      "experiences": [
+        {
+          "experience_name": "Iron House Gym",
+          "experience_title": "Strength Coach",
+          "experience_description": "Designed strength programs for amateur and competitive athletes.",
+          "experience_start": "2016-05-01",
+          "experience_end": "2022-08-01"
+        }
+      ],
+      "certifications": [
+        {
+          "certification_name": "NASM Certified Personal Trainer",
+          "certification_date": "2018-11-15",
+          "certification_score": "92",
+          "certification_organization": "NASM"
+        }
+      ],
+      "payment_interval": "monthly",
+      "price_cents": 15000
+    },
+    "approve": true
+  },
+  {
+    "account": {
+      "name": "Malik Thompson",
+      "email": "malik.thompson@example.com",
+      "password": "RunFast22$",
+      "gender": "male",
+      "age": 29,
+      "bio": "Endurance and running coach focused on technique and race prep.",
+      "pfp_url": "https://example.com/avatars/malik.png"
+    },
+    "coach_details": {
+      "specialties": ["endurance", "running", "race prep"],
+      "availabilities": [
+        { "weekday": "tuesday", "start_time": "06:00:00", "end_time": "10:00:00", "max_time_commitment_seconds": 5400 },
+        { "weekday": "thursday", "start_time": "16:00:00", "end_time": "20:00:00", "max_time_commitment_seconds": 5400 }
+      ],
+      "experiences": [
+        {
+          "experience_name": "Marathon Collective",
+          "experience_title": "Running Coach",
+          "experience_description": "Coached long-distance runners through marathon and half-marathon cycles.",
+          "experience_start": "2015-03-01",
+          "experience_end": "2021-12-31"
+        }
+      ],
+      "certifications": [
+        {
+          "certification_name": "RRCA Running Coach Certification",
+          "certification_date": "2019-06-20",
+          "certification_score": null,
+          "certification_organization": "RRCA"
+        }
+      ],
+      "payment_interval": "monthly",
+      "price_cents": 13000
+    },
+    "approve": true
+  },
+  {
+    "account": {
+      "name": "Sofia Patel",
+      "email": "sofia.patel@example.com",
+      "password": "Nutrition123$",
+      "gender": "female",
+      "age": 35,
+      "bio": "Nutrition coach who blends macronutrient strategy with strength training.",
+      "pfp_url": "https://example.com/avatars/sofia.png"
+    },
+    "coach_details": {
+      "specialties": ["nutrition", "weight management", "body composition"],
+      "availabilities": [
+        { "weekday": "monday", "start_time": "09:00:00", "end_time": "13:00:00", "max_time_commitment_seconds": 3600 },
+        { "weekday": "friday", "start_time": "12:00:00", "end_time": "16:00:00", "max_time_commitment_seconds": 3600 }
+      ],
+      "experiences": [
+        {
+          "experience_name": "Nutrient Edge",
+          "experience_title": "Registered Dietitian",
+          "experience_description": "Delivered nutrition plans and coaching for clients pursuing health and physique goals.",
+          "experience_start": "2018-01-01",
+          "experience_end": null
+        }
+      ],
+      "certifications": [
+        {
+          "certification_name": "Precision Nutrition Level 1",
+          "certification_date": "2020-02-10",
+          "certification_score": "Pass",
+          "certification_organization": "Precision Nutrition"
+        }
+      ],
+      "payment_interval": "yearly",
+      "price_cents": 120000
+    },
+    "approve": true
+  },
+  {
+    "account": {
+      "name": "Noah Kim",
+      "email": "noah.kim@example.com",
+      "password": "HIITcoach99$",
+      "gender": "male",
+      "age": 28,
+      "bio": "HIIT and conditioning coach with a focus on metabolic training.",
+      "pfp_url": "https://example.com/avatars/noah.png"
+    },
+    "coach_details": {
+      "specialties": ["HIIT", "conditioning", "metabolic training"],
+      "availabilities": [
+        { "weekday": "wednesday", "start_time": "18:00:00", "end_time": "21:00:00", "max_time_commitment_seconds": 3600 },
+        { "weekday": "saturday", "start_time": "08:00:00", "end_time": "11:00:00", "max_time_commitment_seconds": 3600 }
+      ],
+      "experiences": [
+        {
+          "experience_name": "Pulse Fitness Studio",
+          "experience_title": "Group Fitness Instructor",
+          "experience_description": "Led high-intensity group classes and personalized conditioning sessions.",
+          "experience_start": "2017-06-01",
+          "experience_end": "2023-03-01"
+        }
+      ],
+      "certifications": [
+        {
+          "certification_name": "ACE Certified Personal Trainer",
+          "certification_date": "2017-09-05",
+          "certification_score": null,
+          "certification_organization": "ACE"
+        }
+      ],
+      "payment_interval": "monthly",
+      "price_cents": 14000
+    },
+    "approve": true
+  },
+  {
+    "account": {
+      "name": "Ava Johnson",
+      "email": "ava.johnson@example.com",
+      "password": "YogaFlow77$",
+      "gender": "female",
+      "age": 31,
+      "bio": "Yoga and recovery coach helping clients stay mobile, balanced, and injury-free.",
+      "pfp_url": "https://example.com/avatars/ava.png"
+    },
+    "coach_details": {
+      "specialties": ["yoga", "mobility", "recovery"],
+      "availabilities": [
+        { "weekday": "tuesday", "start_time": "10:00:00", "end_time": "13:00:00", "max_time_commitment_seconds": 3600 },
+        { "weekday": "thursday", "start_time": "17:00:00", "end_time": "20:00:00", "max_time_commitment_seconds": 3600 }
+      ],
+      "experiences": [
+        {
+          "experience_name": "Zen Motion Studio",
+          "experience_title": "Yoga Instructor",
+          "experience_description": "Guided Vinyasa and restorative yoga sessions with emphasis on alignment and recovery.",
+          "experience_start": "2014-04-01",
+          "experience_end": null
+        }
+      ],
+      "certifications": [
+        {
+          "certification_name": "Yoga Alliance RYT-200",
+          "certification_date": "2016-07-12",
+          "certification_score": null,
+          "certification_organization": "Yoga Alliance"
+        }
+      ],
+      "payment_interval": "monthly",
+      "price_cents": 11000
+    },
+    "approve": true
+  }
+]

@@ -1,9 +1,8 @@
-from datetime import datetime, timedelta
-
 from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlmodel import Session, select
+from datetime import datetime, timedelta
 
 from src import config
 from src.api.auth.services import hash_password
@@ -65,6 +64,38 @@ def get_account_from_bearer(
 
     return user
 
+def get_active_account(account: Account = Depends(get_account_from_bearer)) -> Account:
+    if not account.is_active:
+        raise HTTPException(status_code=400, detail="Inactive account")
+    return account
+
+def get_account_even_if_inactive(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_session),
+) -> Account:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        payload = jwt.decode(token, config.JWT_SECRET, algorithms=[config.ALGORITHM])
+        account_id_str = payload.get("sub")
+
+        if account_id_str is None:
+            raise credentials_exception
+
+        account_id = int(account_id_str)
+    except (JWTError, ValueError):
+        raise credentials_exception
+
+    user = db.get(Account, account_id)
+
+    if user is None:
+        raise credentials_exception
+
+    return user
 
 
 """
@@ -78,14 +109,14 @@ role_authorization_exception = HTTPException(
 )
 
 #this will err when the user doesn't fill out initial survey
-def get_client_account(account: Account = Depends(get_account_from_bearer)):
+def get_client_account(account: Account = Depends(get_active_account)):
     if account.client_id is None:
         raise role_authorization_exception
     else:
         return account #account routes down to role resources
 
 def get_coach_account(
-    account: Account = Depends(get_account_from_bearer),
+    account: Account = Depends(get_active_account),
     db: Session = Depends(get_session)
 ):
     if account.coach_id is None:
@@ -95,7 +126,7 @@ def get_coach_account(
         raise role_authorization_exception
     return account #account routes down to role resources
     
-def get_admin_account(account: Account = Depends(get_account_from_bearer)):
+def get_admin_account(account: Account = Depends(get_active_account)):
     if account.admin_id is None:
         raise role_authorization_exception
     else:
@@ -134,7 +165,7 @@ def build_client_coach_contexts(
 def client_coach_request_context(
     request_id: int,
     db: Session = Depends(get_session),
-    account: Account = Depends(get_account_from_bearer),
+    account: Account = Depends(get_active_account),
 ) -> dict[str, ClientCoachContext]:
     request = db.get(ClientCoachRequest, request_id)
 
@@ -147,7 +178,7 @@ def client_coach_request_context(
 def client_coach_relationship_context(
     relationship_id: int,
     db: Session = Depends(get_session),
-    account: Account = Depends(get_account_from_bearer),
+    account: Account = Depends(get_active_account),
 ) -> dict[str, ClientCoachContext]:
     relationship = db.get(ClientCoachRelationship, relationship_id)
 

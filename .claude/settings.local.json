@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile src/api/roles/client/client.py)",
+      "Bash(python -m py_compile src/api/roles/client/client.py src/api/roles/client/domain.py)"
+    ]
+  }
+}

@@ -1,0 +1,337 @@
+[
+  {
+    "meal_name": "Grilled Chicken Power Bowl",
+    "ingredients": [
+      {
+        "ingredient_name": "Grilled chicken breast",
+        "portion_size": { "count": 1, "unit_name": "piece", "is_imperial": true },
+        "calories": 165
+      },
+      {
+        "ingredient_name": "Cooked brown rice",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 216
+      },
+      {
+        "ingredient_name": "Steamed broccoli",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 55
+      },
+      {
+        "ingredient_name": "Avocado",
+        "portion_size": { "count": 1, "unit_name": "piece", "is_imperial": true },
+        "calories": 234
+      }
+    ]
+  },
+  {
+    "meal_name": "Salmon Quinoa Plate",
+    "ingredients": [
+      {
+        "ingredient_name": "Baked salmon fillet",
+        "portion_size": { "count": 1, "unit_name": "piece", "is_imperial": true },
+        "calories": 232
+      },
+      {
+        "ingredient_name": "Cooked quinoa",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 222
+      },
+      {
+        "ingredient_name": "Roasted asparagus",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 40
+      }
+    ]
+  },
+  {
+    "meal_name": "Turkey Wrap",
+    "ingredients": [
+      {
+        "ingredient_name": "Whole wheat wrap",
+        "portion_size": { "count": 1, "unit_name": "piece", "is_imperial": true },
+        "calories": 130
+      },
+      {
+        "ingredient_name": "Sliced turkey breast",
+        "portion_size": { "count": 3, "unit_name": "slice", "is_imperial": true },
+        "calories": 90
+      },
+      {
+        "ingredient_name": "Mixed greens",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 7
+      },
+      {
+        "ingredient_name": "Hummus",
+        "portion_size": { "count": 2, "unit_name": "tablespoon", "is_imperial": true },
+        "calories": 70
+      }
+    ]
+  },
+  {
+    "meal_name": "Greek Yogurt Parfait",
+    "ingredients": [
+      {
+        "ingredient_name": "Plain Greek yogurt",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 130
+      },
+      {
+        "ingredient_name": "Fresh berries",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 60
+      },
+      {
+        "ingredient_name": "Granola",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 120
+      }
+    ]
+  },
+  {
+    "meal_name": "Beef and Sweet Potato Hash",
+    "ingredients": [
+      {
+        "ingredient_name": "Lean ground beef",
+        "portion_size": { "count": 4, "unit_name": "ounce", "is_imperial": true },
+        "calories": 220
+      },
+      {
+        "ingredient_name": "Roasted sweet potato",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 180
+      },
+      {
+        "ingredient_name": "Bell peppers",
+        "portion_size": { "count": 0.5, "unit_name": "cup", "is_imperial": true },
+        "calories": 15
+      }
+    ]
+  },
+  {
+    "meal_name": "Tuna Avocado Salad",
+    "ingredients": [
+      {
+        "ingredient_name": "Canned tuna in water",
+        "portion_size": { "count": 1, "unit_name": "can", "is_imperial": true },
+        "calories": 100
+      },
+      {
+        "ingredient_name": "Avocado",
+        "portion_size": { "count": 0.5, "unit_name": "piece", "is_imperial": true },
+        "calories": 117
+      },
+      {
+        "ingredient_name": "Mixed salad greens",
+        "portion_size": { "count": 2, "unit_name": "cup", "is_imperial": true },
+        "calories": 20
+      }
+    ]
+  },
+  {
+    "meal_name": "Veggie Omelette",
+    "ingredients": [
+      {
+        "ingredient_name": "Eggs",
+        "portion_size": { "count": 3, "unit_name": "piece", "is_imperial": true },
+        "calories": 210
+      },
+      {
+        "ingredient_name": "Spinach",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 7
+      },
+      {
+        "ingredient_name": "Sliced mushrooms",
+        "portion_size": { "count": 0.5, "unit_name": "cup", "is_imperial": true },
+        "calories": 8
+      },
+      {
+        "ingredient_name": "Cherry tomatoes",
+        "portion_size": { "count": 0.5, "unit_name": "cup", "is_imperial": true },
+        "calories": 16
+      }
+    ]
+  },
+  {
+    "meal_name": "Shrimp and Veggie Stir Fry",
+    "ingredients": [
+      {
+        "ingredient_name": "Shrimp",
+        "portion_size": { "count": 6, "unit_name": "ounce", "is_imperial": true },
+        "calories": 170
+      },
+      {
+        "ingredient_name": "Mixed stir-fry vegetables",
+        "portion_size": { "count": 2, "unit_name": "cup", "is_imperial": true },
+        "calories": 80
+      },
+      {
+        "ingredient_name": "Brown rice",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 215
+      }
+    ]
+  },
+  {
+    "meal_name": "Lentil and Kale Soup",
+    "ingredients": [
+      {
+        "ingredient_name": "Cooked lentils",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 230
+      },
+      {
+        "ingredient_name": "Chopped kale",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 33
+      },
+      {
+        "ingredient_name": "Carrots",
+        "portion_size": { "count": 0.5, "unit_name": "cup", "is_imperial": true },
+        "calories": 25
+      }
+    ]
+  },
+  {
+    "meal_name": "Southwest Chicken Salad",
+    "ingredients": [
+      {
+        "ingredient_name": "Grilled chicken breast",
+        "portion_size": { "count": 1, "unit_name": "piece", "is_imperial": true },
+        "calories": 165
+      },
+      {
+        "ingredient_name": "Black beans",
+        "portion_size": { "count": 0.5, "unit_name": "cup", "is_imperial": true },
+        "calories": 114
+      },
+      {
+        "ingredient_name": "Corn",
+        "portion_size": { "count": 0.5, "unit_name": "cup", "is_imperial": true },
+        "calories": 66
+      },
+      {
+        "ingredient_name": "Romaine lettuce",
+        "portion_size": { "count": 2, "unit_name": "cup", "is_imperial": true },
+        "calories": 16
+      }
+    ]
+  },
+  {
+    "meal_name": "Teriyaki Tofu Bowl",
+    "ingredients": [
+      {
+        "ingredient_name": "Firm tofu",
+        "portion_size": { "count": 4, "unit_name": "ounce", "is_imperial": true },
+        "calories": 120
+      },
+      {
+        "ingredient_name": "Cooked brown rice",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 216
+      },
+      {
+        "ingredient_name": "Steamed broccoli",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 55
+      }
+    ]
+  },
+  {
+    "meal_name": "Chicken Caesar Wrap",
+    "ingredients": [
+      {
+        "ingredient_name": "Whole wheat wrap",
+        "portion_size": { "count": 1, "unit_name": "piece", "is_imperial": true },
+        "calories": 130
+      },
+      {
+        "ingredient_name": "Grilled chicken",
+        "portion_size": { "count": 3, "unit_name": "ounce", "is_imperial": true },
+        "calories": 140
+      },
+      {
+        "ingredient_name": "Romaine lettuce",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 8
+      },
+      {
+        "ingredient_name": "Caesar dressing",
+        "portion_size": { "count": 2, "unit_name": "tablespoon", "is_imperial": true },
+        "calories": 80
+      }
+    ]
+  },
+  {
+    "meal_name": "Spinach and Feta Stuffed Chicken",
+    "ingredients": [
+      {
+        "ingredient_name": "Chicken breast",
+        "portion_size": { "count": 1, "unit_name": "piece", "is_imperial": true },
+        "calories": 165
+      },
+      {
+        "ingredient_name": "Spinach",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 7
+      },
+      {
+        "ingredient_name": "Feta cheese",
+        "portion_size": { "count": 0.25, "unit_name": "cup", "is_imperial": true },
+        "calories": 99
+      }
+    ]
+  },
+  {
+    "meal_name": "Breakfast Oatmeal Bowl",
+    "ingredients": [
+      {
+        "ingredient_name": "Rolled oats",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 150
+      },
+      {
+        "ingredient_name": "Almond milk",
+        "portion_size": { "count": 1, "unit_name": "cup", "is_imperial": true },
+        "calories": 30
+      },
+      {
+        "ingredient_name": "Banana slices",
+        "portion_size": { "count": 0.5, "unit_name": "cup", "is_imperial": true },
+        "calories": 67
+      },
+      {
+        "ingredient_name": "Chopped walnuts",
+        "portion_size": { "count": 1, "unit_name": "tablespoon", "is_imperial": true },
+        "calories": 50
+      }
+    ]
+  },
+  {
+    "meal_name": "Black Bean and Corn Salad",
+    "ingredients": [
+      {
+        "ingredient_name": "Black beans",
+        "portion_size": { "count": 0.5, "unit_name": "cup", "is_imperial": true },
+        "calories": 114
+      },
+      {
+        "ingredient_name": "Corn",
+        "portion_size": { "count": 0.5, "unit_name": "cup", "is_imperial": true },
+        "calories": 66
+      },
+      {
+        "ingredient_name": "Cherry tomatoes",
+        "portion_size": { "count": 0.5, "unit_name": "cup", "is_imperial": true },
+        "calories": 16
+      },
+      {
+        "ingredient_name": "Cilantro",
+        "portion_size": { "count": 0.25, "unit_name": "cup", "is_imperial": true },
+        "calories": 1
+      }
+    ]
+  }
+]

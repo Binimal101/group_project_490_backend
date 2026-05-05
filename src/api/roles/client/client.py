@@ -21,6 +21,8 @@ from src.api.roles.client.domain import (
     ReportsResponse,
     CoachReviewResponse,
     ReviewsResponse,
+    MyCoachResponse,
+    MyCoachRequestsResponse,
     ClientInvoicesListResponse,
     ClientInvoiceResponse,
     ClientBillingCyclesListResponse,
@@ -33,7 +35,7 @@ from src.api.roles.shared.domain import DeleteRequestResponse
 
 from src.database.session import get_session
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
-from src.database.coach_client_relationship.models import ClientCoachRequest
+from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
 from src.database.account.models import Account, Availability, Notification
 from src.database.client.models import Client, ClientAvailability, FitnessGoals, ClientWorkoutPlan
 from src.database.workouts_and_activities.models import WorkoutPlan
@@ -523,3 +525,39 @@ def get_review(coach_id: int, db = Depends(get_session), acc: Account = Depends(
     reviews = db.query(CoachReviews).filter(CoachReviews.coach_id == coach_id).all()
 
     return ReviewsResponse(reviews=reviews)
+
+@router.get("/my_coach", response_model=MyCoachResponse)
+def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Returns the coach of a specific client
+    """
+
+    if acc is None:
+        raise HTTPException(404, detail="Account not found")
+    
+    coach_request = db.query(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).first()
+
+    if not coach_request.is_accepted:
+        raise HTTPException(403, detail="You are not authorized to see this coach until the request is accepted")
+    
+    relationship = db.query(ClientCoachRelationship).filter(ClientCoachRelationship.request_id == coach_request.id).first()
+
+    if relationship is None:
+        raise HTTPException(404, detail="Relationship not Found")
+    
+    coach = db.query(Coach).filter(Coach.id == coach_request.coach_id).first()
+
+    return MyCoachResponse(coach = coach)
+
+@router.get("/my_coach_requests", response_model=MyCoachRequestsResponse)
+def get_my_coach_requests(db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Returns all coach requests for a specific client
+    """
+
+    if acc is None:
+        raise HTTPException(404, detail="Account not found")
+    
+    requests = db.get(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).all()
+
+    return MyCoachRequestsResponse(requests = requests)

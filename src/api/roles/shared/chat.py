@@ -7,10 +7,10 @@ from src.database.session import get_session
 
 #models
 from src.database.account.models import Account
-from src.database.coach_client_relationship.models import Chat, ChatMessage, ClientCoachRelationship
+from src.database.coach_client_relationship.models import Chat, ChatMessage, ClientCoachRelationship, ClientCoachRequest
 
 #domains
-from src.api.roles.shared.domain import CreateNewChatInput, NewChatResponse, SendMessageResponse, GetMessagesResponse
+from src.api.roles.shared.domain import CreateNewChatInput, NewChatResponse, SendMessageResponse, GetMessagesResponse, ChatWithAccountResponse
 
 router = APIRouter(prefix="/roles/shared/chat", tags=["shared", "chat"])
 
@@ -38,6 +38,45 @@ def create_new_chat(
         raise HTTPException(500, detail="Chat creation failed")
     
     return NewChatResponse(chat_id=chat.id)
+
+@router.get("/chat_with_account/{account_id}", response_model=ChatWithAccountResponse)
+def new_chat_with_account(account_id: int, db = Depends(get_session), from_acc: Account = Depends(get_account_from_bearer)):
+    """
+    Gets chat with a specific account
+    """
+    if from_acc is None:
+        raise HTTPException(404, detail="Account not found")
+    
+        
+    to_acc = db.query(Account).filter(id == account_id).first()
+    
+    if to_acc is None:
+        raise HTTPException(404, detail="The account you are trying to chat with is not found")
+    
+    if from_acc.coach_id is None:    
+        request = db.query(ClientCoachRequest).filter(ClientCoachRequest.client_id == from_acc.client_id).first()
+    else:
+        request = db.query(ClientCoachRequest).filter(ClientCoachRequest.client_id == to_acc.client_id).first()
+
+    if request is None:
+        raise HTTPException(404, detail="No Relationship Found")
+
+    relationship = db.query(ClientCoachRelationship).filter(ClientCoachRelationship.request_id == request.id).first()
+
+    if relationship is None:
+        raise HTTPException(404, detail="No Relationship Found")
+
+    chat = db.query(Chat).filter(Chat.client_coach_relationship_id == relationship.id).first()
+
+    if chat is None:
+        raise HTTPException(404, detail="Chat not found")
+    
+    messages = db.query(ChatMessage).filter(ChatMessage.chat_id == chat.id).all()
+
+    return ChatWithAccountResponse(messages = messages)
+
+
+    
 
 @router.post("/send_message/{chat_id}", response_model=SendMessageResponse)
 def send_message(chat_id: int, message_text: str, db = Depends(get_session), acc: Account = Depends(get_client_account)):

@@ -59,6 +59,9 @@ class UpdateAccountInput(BaseModel):
     gender: Optional[str] = None
 
 #Responses
+class ChatWithAccountResponse(BaseModel):
+    messages: List[ChatMessage]
+
 class CreateWorkoutPlanResponse(BaseModel):
     workout_plan_id: int
 
