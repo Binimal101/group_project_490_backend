@@ -22,3 +22,7 @@ engine = create_engine(
     pool_recycle=POOL_RECYCLE,
     pool_pre_ping=True,
 )
+
+def get_session():
+    with Session(engine) as session:
+        yield session
