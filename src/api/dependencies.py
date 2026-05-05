@@ -58,44 +58,18 @@ def get_account_from_bearer(
 
     if user is None:
         raise credentials_exception
-    
-    if not user.is_active:
-        raise HTTPException(status_code=400, detail="Inactive account")
 
     return user
 
 def get_active_account(account: Account = Depends(get_account_from_bearer)) -> Account:
     if not account.is_active:
-        raise HTTPException(status_code=400, detail="Inactive account")
+        raise HTTPException(status_code=400, detail="account deactivated")
     return account
 
 def get_account_even_if_inactive(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_session),
+    acc: Account = Depends(get_account_from_bearer),
 ) -> Account:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
-    try:
-        payload = jwt.decode(token, config.JWT_SECRET, algorithms=[config.ALGORITHM])
-        account_id_str = payload.get("sub")
-
-        if account_id_str is None:
-            raise credentials_exception
-
-        account_id = int(account_id_str)
-    except (JWTError, ValueError):
-        raise credentials_exception
-
-    user = db.get(Account, account_id)
-
-    if user is None:
-        raise credentials_exception
-
-    return user
+    return acc
 
 
 """

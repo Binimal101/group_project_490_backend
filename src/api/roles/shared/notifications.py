@@ -4,7 +4,7 @@ from typing import List
 
 from src.database.session import get_session
 from src.database.account.models import Account, Notification
-from src.api.dependencies import PaginationParams, get_account_from_bearer
+from src.api.dependencies import PaginationParams, get_active_account
 
 from pydantic import BaseModel
 from datetime import date
@@ -27,7 +27,7 @@ router = APIRouter(prefix="/roles/shared/notifications", tags=["shared", "notifi
 def query_notifications(
     pagination: PaginationParams = Depends(PaginationParams),
     db: Session = Depends(get_session),
-    acc: Account = Depends(get_account_from_bearer),
+    acc: Account = Depends(get_active_account),
 ):
     """
     Get a sorted list of the current account's notifications (including id), newest first.
@@ -40,7 +40,7 @@ def query_notifications(
 def read_notification(
     notification_id: int,
     db: Session = Depends(get_session),
-    acc: Account = Depends(get_account_from_bearer),
+    acc: Account = Depends(get_active_account),
 ):
     """
     Mark a specific notification as read.
@@ -61,7 +61,7 @@ def read_notification(
 @router.post("/read_all", response_model=dict)
 def read_all_notifications(
     db: Session = Depends(get_session),
-    acc: Account = Depends(get_account_from_bearer),
+    acc: Account = Depends(get_active_account),
 ):
     """
     Mark all notifications for the current account as read.

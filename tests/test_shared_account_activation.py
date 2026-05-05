@@ -9,7 +9,7 @@ def test_account_deactivate_and_activate(test_client, auth_header):
     # Try to access a protected endpoint (should fail)
     resp2 = test_client.patch("/roles/shared/account/update", json={}, headers=auth_header)
     assert resp2.status_code in (400, 401)
-    assert "inactive account" in resp2.text.lower()
+    assert "account deactivated" in resp2.text.lower()
 
     # Activate
     resp3 = test_client.post("/roles/shared/account/activate", headers=auth_header)

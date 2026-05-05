@@ -5,7 +5,7 @@ from src.database.account.models import Account, Availability
 from src.database.client.models import Client, FitnessGoals
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.payment.models import PricingPlan
-from src.api.dependencies import get_account_from_bearer
+from src.api.dependencies import get_active_account, get_account_even_if_inactive
 from src.api.storage import upload_public_file_to_supabase
 from src.api.roles.shared.domain import FullProfileResponse, AccountResponse, UpdateAccountInput
 from sqlmodel import Session, select, desc
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/roles/shared/account", tags=["shared", "account"])
 @router.get("/me", response_model=FullProfileResponse)
 def get_full_profile(
     db: Session = Depends(get_session),
-    acc: Account = Depends(get_account_from_bearer),
+    acc: Account = Depends(get_active_account),
 ):
     """
     Returns a unified profile object with account info, roles, and role-specific details
@@ -97,7 +97,7 @@ def get_full_profile(
 def update_profile_picture(
     file: UploadFile,
     db: Session = Depends(get_session),
-    acc: Account = Depends(get_account_from_bearer),
+    acc: Account = Depends(get_active_account),
 ):
     """
     Uploads the provided file to the `profile_picture` bucket and updates the

@@ -5,7 +5,7 @@ from typing import Optional, List
 from sqlmodel import select
 from sqlalchemy import func, desc, asc, delete
 
-from src.api.dependencies import get_account_from_bearer, get_client_account, PaginationParams
+from src.api.dependencies import get_active_account, get_client_account, PaginationParams
 from src.api.storage import upload_public_file_to_supabase
 
 #models
@@ -48,7 +48,7 @@ from src.database.payment.models import PaymentInformation, Invoice, BillingCycl
 router = APIRouter(prefix="/roles/client", tags=["client"])
 
 @router.post("/initial_survey", response_model=CreateClientResponse)
-def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_session), acc: Account = Depends(get_account_from_bearer)):
+def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_session), acc: Account = Depends(get_active_account)):
     """
     Creates a client, modifies user account to show client_id=xxx
     Attaches pmt info and fitness goal from initial survey

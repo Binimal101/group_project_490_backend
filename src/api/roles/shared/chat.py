@@ -2,7 +2,7 @@
 from sqlmodel import select
 
 from fastapi import APIRouter, Depends, HTTPException
-from src.api.dependencies import get_account_from_bearer, PaginationParams, get_client_account
+from src.api.dependencies import get_active_account, PaginationParams, get_client_account
 from src.database.session import get_session
 
 #models
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/roles/shared/chat", tags=["shared", "chat"])
 def create_new_chat(
     payload: CreateNewChatInput,
     db = Depends(get_session),
-    acc: Account = Depends(get_account_from_bearer)
+    acc: Account = Depends(get_active_account)
 ):
     #checking if relationship is valid
     relationship = db.get(ClientCoachRelationship, payload.relationship_id)
@@ -40,7 +40,7 @@ def create_new_chat(
     return NewChatResponse(chat_id=chat.id)
 
 @router.get("/chat_with_account/{account_id}", response_model=ChatWithAccountResponse)
-def new_chat_with_account(account_id: int, db = Depends(get_session), from_acc: Account = Depends(get_account_from_bearer)):
+def new_chat_with_account(account_id: int, db = Depends(get_session), from_acc: Account = Depends(get_active_account)):
     """
     Gets chat with a specific account
     """
