@@ -66,7 +66,7 @@ def create_client_coach_relationship(db_session):
     db_session.add(relationship)
     db_session.commit()
 
-    return client, coach
+    return client, coach, request, relationship
 
 
 def test_account_deactivate_sends_notification(
@@ -75,7 +75,7 @@ def test_account_deactivate_sends_notification(
     client_auth_header,
     coach_auth_header,
 ):
-    client, coach = create_client_coach_relationship(db_session)
+    client, coach, request, relationship = create_client_coach_relationship(db_session)
 
     client_auth_header = {
         "Authorization": f"Bearer {create_jwt_token(client)}"
@@ -97,11 +97,24 @@ def test_account_deactivate_sends_notification(
         )
     )
 
+    remaining_relationship = db_session.get(ClientCoachRelationship, relationship.id)
+    remaining_request = db_session.get(ClientCoachRequest, request.id)
+
     assert notifications, "No notifications found for coach"
     assert any(
         n.details and "deactivated" in n.details.lower()
         for n in notifications
     )
+    assert remaining_relationship is None
+    assert remaining_request is None
+
+    activate_resp = test_client.post(
+        "/roles/shared/account/activate",
+        headers=client_auth_header,
+    )
+    assert activate_resp.status_code == 200, activate_resp.text
+    assert db_session.get(ClientCoachRelationship, relationship.id) is None
+    assert db_session.get(ClientCoachRequest, request.id) is None
 
 
 def test_account_deactivate_coach_notifies_client(
@@ -110,7 +123,7 @@ def test_account_deactivate_coach_notifies_client(
     client_auth_header,
     coach_auth_header,
 ):
-    client, coach = create_client_coach_relationship(db_session)
+    client, coach, request, relationship = create_client_coach_relationship(db_session)
 
     coach_auth_header = {
         "Authorization": f"Bearer {create_jwt_token(coach)}"
@@ -132,8 +145,21 @@ def test_account_deactivate_coach_notifies_client(
         )
     )
 
+    remaining_relationship = db_session.get(ClientCoachRelationship, relationship.id)
+    remaining_request = db_session.get(ClientCoachRequest, request.id)
+
     assert notifications, "No notifications found for client"
     assert any(
         n.details and "deactivated" in n.details.lower()
         for n in notifications
     )
+    assert remaining_relationship is None
+    assert remaining_request is None
+
+    activate_resp = test_client.post(
+        "/roles/shared/account/activate",
+        headers=coach_auth_header,
+    )
+    assert activate_resp.status_code == 200, activate_resp.text
+    assert db_session.get(ClientCoachRelationship, relationship.id) is None
+    assert db_session.get(ClientCoachRequest, request.id) is None
