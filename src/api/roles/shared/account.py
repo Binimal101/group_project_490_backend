@@ -283,6 +283,11 @@ class ActivateAccountResponse(BaseModel):
     message: str
 
 
+class DeleteAccountResponse(BaseModel):
+    success: bool
+    message: str
+
+
 @router.post("/deactivate", response_model=DeactivateAccountResponse)
 def deactivate_account(
     db: Session = Depends(get_session),
@@ -321,6 +326,23 @@ def activate_account(
     db.commit()
     db.refresh(account)
     return ActivateAccountResponse(success=True, message="Account activated successfully.")
+
+
+@router.delete("/delete", response_model=DeleteAccountResponse)
+def delete_account(
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """
+    Permanently delete the current user's account and all associated data.
+    """
+    account = db.get(Account, acc.id)
+    if account is None:
+        raise HTTPException(404, detail="Account not found")
+
+    db.delete(account)
+    db.commit()
+    return DeleteAccountResponse(success=True, message="Account deleted successfully.")
 
 
 @router.patch("/update", response_model=AccountResponse)
