@@ -2,7 +2,7 @@ from datetime import date
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, Query
 from typing import Optional, List
-from sqlmodel import select
+from sqlmodel import Session, select
 from sqlalchemy import func, desc, asc, delete
 
 from src.api.dependencies import get_active_account, get_client_account, PaginationParams
@@ -39,8 +39,8 @@ from src.database.coach_client_relationship.models import ClientCoachRequest, Cl
 from src.database.account.models import Account, Availability, Notification
 from src.database.client.models import Client, ClientAvailability, FitnessGoals, ClientWorkoutPlan
 from src.database.workouts_and_activities.models import WorkoutPlan
-from src.database.telemetry.models import HealthMetrics, ClientTelemetry
-from src.database.telemetry.models import ClientTelemetry
+from src.database.telemetry.models import HealthMetrics, ClientTelemetry, DailyProgressPicture
+from src.api.roles.client.fitness import _get_or_create_telemetry
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan
 
@@ -342,14 +342,84 @@ def get_current_billing_cycles(db = Depends(get_session), acc: Account = Depends
     return ClientBillingCyclesListResponse(cycles=cycles_list)
 
 @router.post("/upload_progress_picture")
-def upload_progress_picture(file: UploadFile, acc: Account = Depends(get_client_account)):
-    """Upload an image to the `progress_picture` bucket and return the public URL.
+def upload_progress_picture(
+    file: UploadFile,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    """Upload a progress picture and persist one record per day (upsert).
 
-    This endpoint intentionally does not modify the database yet.
+    Uploads the file to Supabase, then finds or creates today's
+    ClientTelemetry row and upserts a DailyProgressPicture record so that
+    only one progress picture exists per client per day.  Re-uploading on the
+    same day replaces the previous URL.
     """
-
     public_url = upload_public_file_to_supabase(file, "progress_picture", str(acc.id))
-    return {"url": public_url}
+
+    telemetry = _get_or_create_telemetry(db, acc.client_id)
+
+    pic = db.exec(
+        select(DailyProgressPicture).where(
+            DailyProgressPicture.client_telemetry_id == telemetry.id
+        )
+    ).first()
+
+    if pic is None:
+        pic = DailyProgressPicture(client_telemetry_id=telemetry.id, url=public_url)
+        db.add(pic)
+    else:
+        pic.url = public_url
+
+    health_metrics = db.exec(
+        select(HealthMetrics).where(
+            HealthMetrics.client_telemetry_id == telemetry.id
+        )
+    ).first()
+    if health_metrics is not None:
+        health_metrics.progress_pic_url = public_url
+        db.add(health_metrics)
+
+    db.commit()
+    db.refresh(pic)
+
+    return {
+        "id": pic.id,
+        "client_telemetry_id": telemetry.id,
+        "url": pic.url,
+        "date": str(telemetry.date),
+    }
+
+
+@router.get("/progress_pictures")
+def get_progress_pictures(
+    pagination: PaginationParams = Depends(PaginationParams),
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    """Return all progress pictures for the current client, newest first."""
+    rows = db.exec(
+        select(DailyProgressPicture, ClientTelemetry, HealthMetrics)
+        .join(ClientTelemetry, DailyProgressPicture.client_telemetry_id == ClientTelemetry.id)
+        .outerjoin(HealthMetrics, HealthMetrics.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == acc.client_id)
+        .order_by(DailyProgressPicture.id.desc())
+        .offset(pagination.skip)
+        .limit(pagination.limit)
+    ).all()
+
+    pictures = []
+    for pic, telem, metrics in rows:
+        url = pic.url or (metrics.progress_pic_url if metrics else None)
+        if not url:
+            continue
+        pictures.append({
+            "id": pic.id,
+            "client_telemetry_id": telem.id,
+            "url": url,
+            "date": str(telem.date),
+        })
+
+    return pictures
 
 
 @router.get("/query/hirable_coaches", response_model=List[HirableCoachItem])

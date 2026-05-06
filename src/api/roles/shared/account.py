@@ -4,11 +4,14 @@ from src.database.session import get_session
 from src.database.account.models import Account, Availability
 from src.database.client.models import Client, FitnessGoals
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
-from src.database.payment.models import PricingPlan
+from src.database.payment.models import PricingPlan, PaymentInformation, Subscription, BillingCycle, Invoice
+from src.database.telemetry.models import HealthMetrics, ClientTelemetry, DailyProgressPicture
+from src.database.coach_client_relationship.models import ClientCoachRelationship, ClientCoachRequest
+from src.database.reports.models import CoachReviews
 from src.api.dependencies import get_active_account, get_account_even_if_inactive
 from src.api.storage import upload_public_file_to_supabase
 from src.api.roles.shared.domain import FullProfileResponse, AccountResponse, UpdateAccountInput
-from sqlmodel import Session, select, desc
+from sqlmodel import Session, select, desc, func
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
@@ -29,19 +32,128 @@ def get_full_profile(
     client_details = None
     coach_details = None
 
-    # Gather roles
     if acc.client_id is not None:
         roles.append("client")
         client = db.get(Client, acc.client_id)
         if client:
             goals = db.exec(select(FitnessGoals).where(FitnessGoals.client_id == client.id)).all()
+            fitness_goals_out = [
+                getattr(g.goal_enum, "value", g.goal_enum)
+                for g in goals
+                if g.goal_enum
+            ]
+            primary_goal = fitness_goals_out[0] if fitness_goals_out else None
             availabilities = db.exec(select(Availability).where(Availability.client_availability_id == client.client_availability_id)).all()
+
+            # Payment information (censored)
+            payment_info = None
+            if client.payment_information_id:
+                pi = db.get(PaymentInformation, client.payment_information_id)
+                if pi:
+                    payment_info = {
+                        "id": pi.id,
+                        "last_four": str(pi.ccnum)[-4:] if pi.ccnum else "",
+                        "cv": "***",
+                        "exp_date": str(pi.exp_date) if pi.exp_date else "",
+                        "ccnum": pi.ccnum,
+                    }
+
+            # Active subscriptions with coach name
+            subscriptions_out = []
+            subs = db.exec(
+                select(Subscription, PricingPlan, Account)
+                .join(PricingPlan, Subscription.pricing_plan_id == PricingPlan.id)
+                .join(Account, PricingPlan.coach_id == Account.coach_id)
+                .where(Subscription.client_id == client.id)
+                .order_by(desc(Subscription.id))
+            ).all()
+            for sub, plan, coach_acc_row in subs:
+                subscriptions_out.append({
+                    "id": sub.id,
+                    "coach_id": plan.coach_id,
+                    "coach_name": coach_acc_row.name,
+                    "status": sub.status,
+                    "start_date": str(sub.start_date) if sub.start_date else None,
+                    "canceled_at": str(sub.canceled_at) if sub.canceled_at else None,
+                    "payment_interval": plan.payment_interval,
+                    "price_cents": plan.price_cents,
+                })
+
+            # Invoices
+            invoices_out = []
+            invoices = db.exec(
+                select(Invoice, BillingCycle, PricingPlan, Account)
+                .join(BillingCycle, Invoice.billing_cycle_id == BillingCycle.id)
+                .join(PricingPlan, BillingCycle.pricing_plan_id == PricingPlan.id)
+                .join(Account, PricingPlan.coach_id == Account.coach_id)
+                .where(Invoice.client_id == client.id)
+                .order_by(desc(Invoice.id))
+            ).all()
+            for inv, cycle, plan, coach_acc_row in invoices:
+                invoices_out.append({
+                    "invoice_id": inv.id,
+                    "amount": inv.amount,
+                    "outstanding_balance": inv.outstanding_balance,
+                    "coach_name": coach_acc_row.name,
+                    "entry_date": str(cycle.entry_date),
+                    "end_date": str(cycle.end_date),
+                })
+
+            # Active billing cycles
+            billing_cycles_out = []
+            cycles = db.exec(
+                select(BillingCycle, PricingPlan, Account)
+                .join(Subscription, BillingCycle.subscription_id == Subscription.id)
+                .join(PricingPlan, BillingCycle.pricing_plan_id == PricingPlan.id)
+                .join(Account, PricingPlan.coach_id == Account.coach_id)
+                .where(
+                    Subscription.client_id == client.id,
+                    Subscription.status == "active",
+                    BillingCycle.active == True,
+                )
+                .order_by(desc(BillingCycle.id))
+            ).all()
+            for cycle, plan, coach_acc_row in cycles:
+                billing_cycles_out.append({
+                    "coach_name": coach_acc_row.name,
+                    "entry_date": str(cycle.entry_date),
+                    "end_date": str(cycle.end_date),
+                    "price_cents": plan.price_cents,
+                    "payment_interval": plan.payment_interval,
+                })
+
+            # Progress pictures from DailyProgressPicture (one per day, upserted)
+            progress_pics_out = []
+            pics = db.exec(
+                select(DailyProgressPicture, ClientTelemetry, HealthMetrics)
+                .join(ClientTelemetry, DailyProgressPicture.client_telemetry_id == ClientTelemetry.id)
+                .outerjoin(HealthMetrics, HealthMetrics.client_telemetry_id == ClientTelemetry.id)
+                .where(ClientTelemetry.client_id == client.id)
+                .order_by(desc(DailyProgressPicture.id))
+            ).all()
+            for dpp, ct, hm in pics:
+                progress_pic_url = dpp.url or (hm.progress_pic_url if hm else None)
+                if not progress_pic_url:
+                    continue
+                progress_pics_out.append({
+                    "id": dpp.id,
+                    "client_telemetry_id": ct.id,
+                    "url": progress_pic_url,
+                    "date": str(ct.date) if ct.date else None,
+                })
+
             client_details = {
                 "id": client.id,
-                "fitness_goals": [g.goal_enum for g in goals],
-                "availabilities": availabilities
+                "primary_goal": primary_goal,
+                "fitness_goals": fitness_goals_out,
+                "availabilities": availabilities,
+                "payment_information": payment_info,
+                "subscriptions": subscriptions_out,
+                "invoices": invoices_out,
+                "billing_cycles": billing_cycles_out,
+                "progress_pictures": progress_pics_out,
             }
-        
+
     if acc.coach_id is not None:
         coach = db.get(Coach, acc.coach_id)
         if coach:
@@ -49,28 +161,48 @@ def get_full_profile(
                 roles.append("coach")
             else:
                 roles.append("coach_pending_or_denied")
-            
-            # Fetch coach-specific info
-            # Certs
+
             certs = db.exec(
                 select(Certifications)
                 .join(CoachCertifications)
                 .where(CoachCertifications.coach_id == coach.id)
             ).all()
-            
-            # Experiences
+
             exps = db.exec(
                 select(Experience)
                 .join(CoachExperience)
-                .where(Experience.id == CoachExperience.experience_id) # Explicit join condition just in case
+                .where(Experience.id == CoachExperience.experience_id)
                 .where(CoachExperience.coach_id == coach.id)
             ).all()
-            
-            # Availability
+
             availabilities = db.exec(select(Availability).where(Availability.coach_availability_id == coach.coach_availability)).all()
-            
-            # Pricing (latest)
+
             pricing = db.exec(select(PricingPlan).where(PricingPlan.coach_id == coach.id).order_by(desc(PricingPlan.id))).first()
+
+            # Client count (active relationships)
+            client_count = db.exec(
+                select(func.count())
+                .select_from(ClientCoachRelationship)
+                .join(ClientCoachRequest, ClientCoachRelationship.request_id == ClientCoachRequest.id)
+                .where(ClientCoachRequest.coach_id == coach.id, ClientCoachRelationship.is_active == True)
+            ).one()
+
+            # Earnings: sum of paid invoice amounts
+            total_earnings_raw = db.exec(
+                select(func.coalesce(func.sum(Invoice.amount - Invoice.outstanding_balance), 0))
+                .join(BillingCycle, Invoice.billing_cycle_id == BillingCycle.id)
+                .join(PricingPlan, BillingCycle.pricing_plan_id == PricingPlan.id)
+                .where(PricingPlan.coach_id == coach.id)
+            ).one()
+            total_earnings = float(total_earnings_raw or 0)
+
+            # Rating
+            avg_rating_raw = db.exec(
+                select(func.avg(CoachReviews.rating)).where(CoachReviews.coach_id == coach.id)
+            ).one()
+            review_count = db.exec(
+                select(func.count()).select_from(CoachReviews).where(CoachReviews.coach_id == coach.id)
+            ).one()
 
             coach_details = {
                 "id": coach.id,
@@ -79,7 +211,12 @@ def get_full_profile(
                 "certifications": certs,
                 "experiences": exps,
                 "availabilities": availabilities,
-                "pricing": pricing
+                "pricing": pricing,
+                "client_count": client_count or 0,
+                "total_earnings": total_earnings,
+                "avg_rating": round(float(avg_rating_raw), 1) if avg_rating_raw else 0,
+                "review_count": review_count or 0,
+                "joined_date": str(acc.created_at) if acc.created_at else None,
             }
 
     if acc.admin_id is not None:
@@ -89,7 +226,7 @@ def get_full_profile(
         account=acc,
         roles=roles,
         client_details=client_details,
-        coach_details=coach_details
+        coach_details=coach_details,
     )
 
 
@@ -119,6 +256,7 @@ def update_profile_picture(
 
 
 class UpdateAccountInput(BaseModel):
+    name: Optional[str] = None
     age: Optional[int] = None
     email: Optional[EmailStr] = None
     bio: Optional[str] = None
@@ -203,6 +341,8 @@ def update_account(
     if account is None:
         raise HTTPException(404, detail="Account not found")
 
+    if payload.name is not None:
+        account.name = payload.name
     if payload.age is not None:
         account.age = payload.age
     if payload.email is not None:

@@ -1,5 +1,5 @@
 from src.api.roles.client.fitness import APIRouter, PaginationParams, Session, _get_or_create_telemetry, datetime, select
-from src.database.telemetry.models import ClientTelemetry, CompletedMealActivity, HealthMetrics, StepCount, CompletedSurvey, DailyMoodSurvey, CompletedWorkout
+from src.database.telemetry.models import ClientTelemetry, CompletedMealActivity, HealthMetrics, StepCount, CompletedSurvey, DailyMoodSurvey, CompletedWorkout, DailyProgressPicture
 from src.api.roles.client.domain import StepCountUpdateInput, StepCountUpdateOutput, WeightUpdateInput
 from src.database.session import get_session
 from src.database.account.models import Account
@@ -56,6 +56,17 @@ def query_weights(
     query = select(HealthMetrics).join(ClientTelemetry, HealthMetrics.client_telemetry_id == ClientTelemetry.id).where(ClientTelemetry.client_id == acc.client_id).order_by(HealthMetrics.id.desc())
 
     weights = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+    telemetry_ids = [weight.client_telemetry_id for weight in weights]
+    if telemetry_ids:
+        pics = db.exec(
+            select(DailyProgressPicture).where(
+                DailyProgressPicture.client_telemetry_id.in_(telemetry_ids)
+            )
+        ).all()
+        pics_by_telemetry_id = {pic.client_telemetry_id: pic.url for pic in pics if pic.url}
+        for weight in weights:
+            if not weight.progress_pic_url:
+                weight.progress_pic_url = pics_by_telemetry_id.get(weight.client_telemetry_id)
 
     return weights
 

@@ -142,9 +142,30 @@ def update_coach_info(new_coach_details: UpdateCoachInfoInput, db = Depends(get_
             db.add(e)
 
         db.flush()
-        
+
         for e in new_coach_details.experiences:
             db.add(CoachExperience(coach_id=coach.id, experience_id=e.id)) # type: ignore
+
+    if new_coach_details.specialties is not None:
+        coach.specialties = ",".join(new_coach_details.specialties)
+
+    if new_coach_details.pricing_plan is not None:
+        pp = new_coach_details.pricing_plan
+        # Close existing open plans
+        existing_plans = db.exec(
+            select(PricingPlan).where(PricingPlan.coach_id == coach.id, PricingPlan.open_to_entry == True)
+        ).all()
+        for ep in existing_plans:
+            ep.open_to_entry = False
+            db.add(ep)
+        # Create new pricing plan
+        new_plan = PricingPlan(
+            coach_id=coach.id,  # type: ignore
+            payment_interval=pp.payment_interval,
+            price_cents=pp.price_cents,
+            open_to_entry=True,
+        )
+        db.add(new_plan)
 
     db.flush()
     db.commit()

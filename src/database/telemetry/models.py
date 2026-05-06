@@ -130,3 +130,20 @@ class CompletedWorkout(SQLModelLU, table=True):
     workout_activity_id: Optional[int] = Field(default=None, foreign_key="workout_activity.id")
     completed_workout_details_id: Optional[int] = Field(default=None, foreign_key="completed_workout_activity.id")
     client_telemetry_id: int = Field(foreign_key="client_telemetry.id", ondelete="CASCADE")
+
+
+class DailyProgressPicture(SQLModelLU, table=True):
+    """One progress picture per client per day, keyed by client_telemetry_id.
+
+    The UNIQUE constraint on client_telemetry_id enforces the one-per-day rule.
+    Uploading again on the same day updates (upserts) the URL in place.
+    """
+    __tablename__ = "daily_progress_picture"  # type: ignore
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    client_telemetry_id: int = Field(
+        foreign_key="client_telemetry.id",
+        ondelete="CASCADE",
+        sa_column_kwargs={"unique": True},
+    )
+    url: str

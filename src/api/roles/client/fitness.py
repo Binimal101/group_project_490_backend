@@ -16,6 +16,7 @@ from src.database.telemetry.models import (
     DailyMoodSurvey, 
     DailyWorkoutSurvey,
     DailyBodyMetricsSurvey,
+    DailyProgressPicture,
     DailyStepsSurvey,
     DailyMealSurvey,
     CompletedSurvey,
@@ -514,6 +515,21 @@ def submit_daily_body_metrics_survey(
     )
     db.add(health_metrics)
     db.flush()
+
+    if payload.progress_pic_url:
+        progress_picture = db.exec(
+            select(DailyProgressPicture).where(
+                DailyProgressPicture.client_telemetry_id == telemetry.id
+            )
+        ).first()
+        if progress_picture is None:
+            progress_picture = DailyProgressPicture(
+                client_telemetry_id=telemetry.id,
+                url=payload.progress_pic_url,
+            )
+        else:
+            progress_picture.url = payload.progress_pic_url
+        db.add(progress_picture)
     
     survey.is_finished = True
     survey.completed_health_metrics_id = health_metrics.id
