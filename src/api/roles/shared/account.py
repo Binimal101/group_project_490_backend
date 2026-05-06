@@ -3,9 +3,10 @@ import requests
 from src import config
 
 from src.database.session import get_session
-from src.database.account.models import Account
+from src.database.account.models import Account, Notification
+from src.database.coach_client_relationship.models import ClientCoachRelationship, ClientCoachRequest
 from src.api.dependencies import get_account_from_bearer, get_active_account, get_account_even_if_inactive
-from sqlmodel import Session
+from sqlmodel import Session, select
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from datetime import datetime
@@ -92,6 +93,95 @@ class ActivateAccountResponse(BaseModel):
     message: str
 
 
+def get_affected_accounts(db: Session, account: Account) -> list[Account]:
+    affected_accounts = []
+
+    if account.client_id is not None:
+        relationships = db.exec(select(ClientCoachRelationship)).all()
+
+        for relationship in relationships:
+            request = db.get(ClientCoachRequest, relationship.request_id)
+
+            if request and request.client_id == account.client_id:
+                coach_account = db.exec(
+                    select(Account).where(Account.coach_id == request.coach_id)
+                ).first()
+
+                if coach_account and coach_account.id != account.id:
+                    affected_accounts.append(coach_account)
+
+    if account.coach_id is not None:
+        relationships = db.exec(select(ClientCoachRelationship)).all()
+
+        for relationship in relationships:
+            request = db.get(ClientCoachRequest, relationship.request_id)
+
+            if request and request.coach_id == account.coach_id:
+                client_account = db.exec(
+                    select(Account).where(Account.client_id == request.client_id)
+                ).first()
+
+                if client_account and client_account.id != account.id:
+                    affected_accounts.append(client_account)
+
+    return affected_accounts
+
+def notify_affected_accounts(
+    db: Session,
+    deactivated_account: Account,
+    affected_accounts: list[Account],
+):
+    for affected_account in affected_accounts:
+        if affected_account.id is None:
+            continue
+
+        db.add(
+            Notification(
+                account_id=affected_account.id,
+                fav_category="account",
+                message="Account deactivated",
+                details=f"{deactivated_account.name} has deactivated their account.",
+                is_read=False,
+            )
+        )
+    db.commit()
+
+def delete_client_coach_mappings(db: Session, account: Account):
+    if account.client_id is not None:
+        requests = db.exec(
+            select(ClientCoachRequest)
+            .where(ClientCoachRequest.client_id == account.client_id)
+        ).all()
+
+        for request in requests:
+            relationships = db.exec(
+                select(ClientCoachRelationship)
+                .where(ClientCoachRelationship.request_id == request.id)
+            ).all()
+
+            for relationship in relationships:
+                db.delete(relationship)
+
+            db.delete(request)
+
+    if account.coach_id is not None:
+        requests = db.exec(
+            select(ClientCoachRequest)
+            .where(ClientCoachRequest.coach_id == account.coach_id)
+        ).all()
+
+        for request in requests:
+            relationships = db.exec(
+                select(ClientCoachRelationship)
+                .where(ClientCoachRelationship.request_id == request.id)
+            ).all()
+
+            for relationship in relationships:
+                db.delete(relationship)
+
+            db.delete(request)
+
+
 @router.post("/deactivate", response_model=DeactivateAccountResponse)
 def deactivate_account(
     db: Session = Depends(get_session),
@@ -105,7 +195,13 @@ def deactivate_account(
         raise HTTPException(404, detail="Account not found")
     if not account.is_active:
         return DeactivateAccountResponse(success=False, message="Account is already deactivated.")
+    
+    affected_accounts = get_affected_accounts(db, account)
     account.is_active = False
+    account.status = "deactivated"
+    notify_affected_accounts(db, account, affected_accounts)
+    delete_client_coach_mappings(db, account)
+    
     db.add(account)
     db.commit()
     db.refresh(account)
@@ -126,6 +222,7 @@ def activate_account(
     if account.is_active:
         return ActivateAccountResponse(success=False, message="Account is already active.")
     account.is_active = True
+    account.status = "active"
     db.add(account)
     db.commit()
     db.refresh(account)
