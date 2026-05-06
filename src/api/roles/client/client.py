@@ -1,15 +1,10 @@
-import os
-
-import requests
-from datetime import date
-
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, Query
 from typing import Optional, List
-from sqlmodel import select
+from sqlmodel import Session, select
 from sqlalchemy import func, desc, asc, delete
 
-from src import config
-from src.api.dependencies import get_account_from_bearer, get_client_account, PaginationParams
+from src.api.dependencies import get_active_account, get_client_account, PaginationParams
+from src.api.storage import upload_public_file_to_supabase
 
 #models
 from src.api.roles.client.domain import (
@@ -30,6 +25,8 @@ from src.api.roles.client.domain import (
     ClientInvoiceResponse,
     ClientBillingCyclesListResponse,
     ClientBillingCycleResponse,
+    AssignWorkoutPlanInput,
+    AssignWorkoutPlanResponse,
 )
 
 from src.api.roles.shared.domain import DeleteRequestResponse
@@ -38,9 +35,15 @@ from src.database.session import get_session
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
 from src.database.account.models import Account, Availability, Notification
-from src.database.client.models import Client, ClientAvailability, FitnessGoals
-from src.database.telemetry.models import HealthMetrics, ClientTelemetry
-from src.database.telemetry.models import ClientTelemetry
+from src.database.client.models import Client, ClientAvailability, FitnessGoals, ClientWorkoutPlan
+from src.database.workouts_and_activities.models import WorkoutPlan
+from src.database.telemetry.models import HealthMetrics, ClientTelemetry, DailyProgressPicture
+from src.api.roles.client.fitness import (
+    TELEMETRY_PROGRESS_PICTURE,
+    TELEMETRY_WEIGHT,
+    create_telemetry_event,
+    _get_or_create_daily_telemetry_for_type,
+)
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan
 
@@ -48,7 +51,7 @@ from src.database.payment.models import PaymentInformation, Invoice, BillingCycl
 router = APIRouter(prefix="/roles/client", tags=["client"])
 
 @router.post("/initial_survey", response_model=CreateClientResponse)
-def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_session), acc: Account = Depends(get_account_from_bearer)):
+def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_session), acc: Account = Depends(get_active_account)):
     """
     Creates a client, modifies user account to show client_id=xxx
     Attaches pmt info and fitness goal from initial survey
@@ -82,8 +85,7 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
     if client.id is None:
         raise HTTPException(500, detail="Something went wrong when adding new client")
 
-    telem = ClientTelemetry(client_id=client.id, date=date.today())
-    db.add(telem)
+    telem = create_telemetry_event(db, client.id, TELEMETRY_WEIGHT, commit=False)
     
     client_details.fitness_goals.client_id = client.id  # type: ignore
     db.add(client_details.fitness_goals)
@@ -144,11 +146,18 @@ def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_s
         db.flush()
         client.payment_information_id = payload.payment_information.id
 
-    # Health metrics: append a new telemetry record and attach the metrics
+    # Health metrics: one editable body metric row per local day.
     if payload.health_metrics:
-        telem = ClientTelemetry(client_id=client.id, date=date.today())
-        db.add(telem)
-        db.flush()
+        telem = _get_or_create_daily_telemetry_for_type(db, client.id, TELEMETRY_WEIGHT)
+        existing_metrics = db.exec(
+            select(HealthMetrics).where(HealthMetrics.client_telemetry_id == telem.id)
+        ).first()
+        if existing_metrics is not None:
+            existing_metrics.weight = payload.health_metrics.weight
+            db.add(existing_metrics)
+            db.commit()
+            return DunderResponse()
+
         payload.health_metrics.client_telemetry_id = telem.id
         db.add(payload.health_metrics)
 
@@ -178,6 +187,33 @@ def me(db = Depends(get_session), acc: Account = Depends(get_client_account)):
         last_recorded_weight=weight,
         last_recorded_height=height,
     )
+
+@router.post("/assign_plan", response_model=AssignWorkoutPlanResponse)
+def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Assigns a workout plan to the authenticated client.
+    """
+    if acc.client_id is None:
+        raise HTTPException(404, detail="Client profile not found")
+
+    plan = db.get(WorkoutPlan, payload.workout_plan_id)
+    if plan is None:
+        raise HTTPException(404, detail="Workout plan not found")
+
+    client_workout_plan = ClientWorkoutPlan(
+        client_id=acc.client_id,
+        workout_plan_id=payload.workout_plan_id,
+        start_time=payload.start_dt,
+        end_time=payload.end_dt
+    )
+    db.add(client_workout_plan)
+    db.commit()
+    db.refresh(client_workout_plan)
+
+    if client_workout_plan.id is None:
+        raise HTTPException(500, detail="Something went wrong while assigning the workout plan")
+
+    return AssignWorkoutPlanResponse(client_workout_plan_id=client_workout_plan.id)
 
 
 
@@ -315,37 +351,78 @@ def get_current_billing_cycles(db = Depends(get_session), acc: Account = Depends
     return ClientBillingCyclesListResponse(cycles=cycles_list)
 
 @router.post("/upload_progress_picture")
-def upload_progress_picture(file: UploadFile, acc: Account = Depends(get_client_account)):
-    """Upload an image to the `progress_picture` bucket and return the public URL.
+def upload_progress_picture(
+    file: UploadFile,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    """Upload a progress picture and persist one record per day (upsert).
 
-    This endpoint intentionally does not modify the database yet.
+    Uploads the file to Supabase, then finds or creates today's
+    ClientTelemetry row and upserts a DailyProgressPicture record so that
+    only one progress picture exists per client per day.  Re-uploading on the
+    same day replaces the previous URL.
     """
+    public_url = upload_public_file_to_supabase(file, "progress_picture", str(acc.id))
 
-    SUPABASE_URL = config.SUPABASE_URL or os.getenv("SUPABASE_URL")
-    SUPABASE_SERVICE_KEY = config.SUPABASE_SERVICE_KEY or os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
+    if acc.client_id is None:
+        raise HTTPException(status_code=404, detail="Client profile not found")
 
-    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        raise HTTPException(500, detail="Supabase storage is not configured on the server")
+    telemetry = _get_or_create_daily_telemetry_for_type(
+        db,
+        acc.client_id,
+        TELEMETRY_PROGRESS_PICTURE,
+    )
 
-    bucket = "progress_picture"
-    filename = f"{acc.id}_{file.filename}"
-    upload_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{bucket}/{filename}"
+    pic = db.exec(
+        select(DailyProgressPicture).where(
+            DailyProgressPicture.client_telemetry_id == telemetry.id
+        )
+    ).first()
 
-    headers = {
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "apikey": SUPABASE_SERVICE_KEY,
+    if pic is None:
+        pic = DailyProgressPicture(client_telemetry_id=telemetry.id, url=public_url)
+        db.add(pic)
+    else:
+        pic.url = public_url
+
+    db.commit()
+    db.refresh(pic)
+
+    return {
+        "id": pic.id,
+        "client_telemetry_id": telemetry.id,
+        "url": pic.url,
+        "date": str(telemetry.date),
     }
 
-    try:
-        resp = requests.put(upload_url, data=file.file, headers=headers)
-    except Exception as e:
-        raise HTTPException(500, detail=f"Upload failed: {e}")
 
-    if resp.status_code not in (200, 201, 204):
-        raise HTTPException(resp.status_code, detail=f"Upload failed: {resp.text}")
+@router.get("/progress_pictures")
+def get_progress_pictures(
+    pagination: PaginationParams = Depends(PaginationParams),
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    """Return all progress pictures for the current client, newest first."""
+    rows = db.exec(
+        select(DailyProgressPicture, ClientTelemetry)
+        .join(ClientTelemetry, DailyProgressPicture.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == acc.client_id)
+        .order_by(DailyProgressPicture.id.desc())
+        .offset(pagination.skip)
+        .limit(pagination.limit)
+    ).all()
 
-    public_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{bucket}/{filename}"
-    return {"url": public_url}
+    pictures = []
+    for pic, telem in rows:
+        pictures.append({
+            "id": pic.id,
+            "client_telemetry_id": telem.id,
+            "url": pic.url,
+            "date": str(telem.date),
+        })
+
+    return pictures
 
 
 @router.get("/query/hirable_coaches", response_model=List[HirableCoachItem])
@@ -554,6 +631,6 @@ def get_my_coach_requests(db = Depends(get_session), acc: Account = Depends(get_
     if acc is None:
         raise HTTPException(404, detail="Account not found")
     
-    requests = db.get(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).all()
+    requests = db.get(ClientCoachRequest, acc.client_id).all()
 
     return MyCoachRequestsResponse(requests = requests)

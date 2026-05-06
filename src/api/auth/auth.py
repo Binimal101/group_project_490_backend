@@ -9,7 +9,7 @@ import requests
 from src.api.auth.domain import AuthTokenResponse, LoginRequest, SignupRequest
 from src.api.auth.services import create_account
 from src.api.dependencies import authenticate_user, create_jwt_token
-from src.api.dependencies import get_account_from_bearer
+from src.api.dependencies import get_account_even_if_inactive
 
 from src.database.account.models import Account
 from src.database.session import get_session
@@ -23,9 +23,12 @@ def issue_token(user: Account) -> AuthTokenResponse:
     return AuthTokenResponse(access_token=token)
 
 @router.get("/roles")
-def read_current_roles(user = Depends(get_account_from_bearer), db = Depends(get_session)):
+def read_current_roles(user: Account = Depends(get_account_even_if_inactive), db = Depends(get_session)):
     """Returns a list of the current user's roles. Mainly for frontend role-based rendering."""
     roles: list[str] = []
+
+    if not user.is_active:
+        return ["deactivated"]
 
     if user.client_id is not None:
         roles.append("client")

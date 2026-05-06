@@ -47,10 +47,12 @@ dependencies = [
     "typing-inspection==0.4.2",
     "urllib3==2.6.3",
     "uvicorn==0.42.0",
+    "pytest-cov>=7.1.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+addopts = "--cov=src --cov-report=term-missing --cov-fail-under=50"
 filterwarnings = [
     "ignore:datetime.datetime.utcnow\\(\\) is deprecated:DeprecationWarning",
     "ignore:The `dict` method is deprecated:DeprecationWarning",
