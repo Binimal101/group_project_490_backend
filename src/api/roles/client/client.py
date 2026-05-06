@@ -31,6 +31,7 @@ from src.api.roles.client.domain import (
     PayInvoiceInput,
     PayInvoiceResponse,
 )
+from src.api.roles.coach.domain import CoachAvailabilityResponse
 
 from src.api.roles.shared.domain import DeleteRequestResponse
 
@@ -202,6 +203,27 @@ def me(db = Depends(get_session), acc: Account = Depends(get_client_account)):
         last_recorded_weight=weight,
         last_recorded_height=height,
     )
+
+
+@router.get("/coach_availability/{coach_id}", response_model=CoachAvailabilityResponse)
+def get_coach_availability_for_client(coach_id: int, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Proxy endpoint for clients to fetch a coach's availability using the client router prefix.
+    Mirrors the logic in the coach router so client-side calls to `/roles/client/coach_availability/{coach_id}` work.
+    """
+    if acc.client_id is None:
+        raise HTTPException(404, detail="Please log in to view coach availability")
+
+    coach = db.get(Coach, coach_id)
+    if coach is None:
+        raise HTTPException(404, detail="Coach not found")
+
+    if coach.verified == False:
+        raise HTTPException(404, detail="Coach is not verified yet, availability is not viewable")
+
+    availabilities = db.exec(select(Availability).where(Availability.coach_availability_id == coach.coach_availability)).all()
+
+    return CoachAvailabilityResponse(coach_availabilities=availabilities)
 
 @router.post("/assign_plan", response_model=AssignWorkoutPlanResponse)
 def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
