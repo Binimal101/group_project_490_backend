@@ -152,6 +152,13 @@ def google_oauth_callback(request: Request, code: str | None = None, state: str 
     except JWTError:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
+    # Re-declare credentials needed for token exchange
+    client_id = os.getenv("GCP_CLIENT_ID")
+    client_secret = os.getenv("GCP_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=500, detail="GCP_CLIENT_ID and GCP_CLIENT_SECRET must be configured")
+    redirect_uri = os.getenv("OAUTH_REDIRECT_URI", "https://api.till-failure.us/auth/google")
+
     # Exchange code for tokens
     token_url = "https://oauth2.googleapis.com/token"
     data = {
