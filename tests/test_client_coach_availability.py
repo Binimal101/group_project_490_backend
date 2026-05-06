@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlmodel import select
 
@@ -124,7 +124,7 @@ def test_coach_fetches_updated_client_availability(
 
     relationship = ClientCoachRelationship(
         request_id=request.id,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
         is_active=True,
         coach_blocked=False,
         client_blocked=False,

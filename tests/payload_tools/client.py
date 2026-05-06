@@ -1,5 +1,7 @@
 from datetime import date
 
+from tests.payload_tools.constants import TEST_ALT_CARD_NUMBER
+
 def build_client_init_payload(goal="weight loss", weight=170, weekday="monday"):
     """
     Builds a mock payload for completing the initial client survey
@@ -8,7 +10,7 @@ def build_client_init_payload(goal="weight loss", weight=170, weekday="monday"):
     return {
         "fitness_goals": {"goal_enum": goal},
         "payment_information": {
-            "ccnum": "4242424242424242",
+            "ccnum": TEST_ALT_CARD_NUMBER,
             "cv": "123",
             "exp_date": str(date(2026, 12, 31)),
         },

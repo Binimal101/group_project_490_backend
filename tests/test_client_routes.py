@@ -1,10 +1,13 @@
+from tests.payload_tools.constants import TEST_CARD_NUMBER
+
+
 def make_client_profile(test_client, auth_header):
     payload = {
         "fitness_goals": {
             "goal_enum": "weight loss"
         },
         "payment_information": {
-            "ccnum": "4111111111111111",
+            "ccnum": TEST_CARD_NUMBER,
             "cv": "123",
             "exp_date": "2026-12-31"
         },
@@ -26,7 +29,7 @@ def make_client_profile(test_client, auth_header):
         headers=auth_header
     )
 
-    assert response.status_code in (200, 409)
+    assert response.status_code == 200
 
 
 def test_get_my_coach(test_client, auth_header):
@@ -37,18 +40,18 @@ def test_get_my_coach(test_client, auth_header):
         headers=auth_header
     )
 
-    assert response.status_code in (200, 404)
+    assert response.status_code == 404
 
 
 def test_get_coach_profile(test_client, auth_header):
     make_client_profile(test_client, auth_header)
 
     response = test_client.get(
-        "/roles/client/coach_profile/1",
+        "/roles/client/coach_profile/999999",
         headers=auth_header
     )
 
-    assert response.status_code in (200, 404)
+    assert response.status_code == 404
 
 
 def test_get_progress_pictures(test_client, auth_header):
