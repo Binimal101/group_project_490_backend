@@ -631,6 +631,6 @@ def get_my_coach_requests(db = Depends(get_session), acc: Account = Depends(get_
     if acc is None:
         raise HTTPException(404, detail="Account not found")
     
-    requests = db.get(ClientCoachRequest, acc.client_id).all()
+    requests = db.query(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).all()
 
     return MyCoachRequestsResponse(requests = requests)
