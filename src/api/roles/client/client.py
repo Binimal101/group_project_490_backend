@@ -143,6 +143,7 @@ def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_s
             db.flush()
             client.client_availability_id = ca.id
             ca_id = ca.id
+            db.add(client)
         else:
             db.exec(delete(Availability).where(Availability.client_availability_id == ca_id))
 

@@ -140,7 +140,14 @@ def update_coach_info(new_coach_details: UpdateCoachInfoInput, db = Depends(get_
     # coach.coach_availability already stores the id; avoid an extra query
     coach_availability_id = coach.coach_availability
     if new_coach_details.availabilities is not None:
-        if coach_availability_id is not None:
+        if coach_availability_id is None:
+            coach_availability = CoachAvailability()
+            db.add(coach_availability)
+            db.flush()
+            coach.coach_availability = coach_availability.id
+            coach_availability_id = coach_availability.id
+            db.add(coach)
+        else:
             db.exec(delete(Availability).where(Availability.coach_availability_id == coach_availability_id))
         for a in new_coach_details.availabilities:
             a.coach_availability_id = coach_availability_id # type: ignore
