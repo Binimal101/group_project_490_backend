@@ -10,7 +10,7 @@ from src.database.workouts_and_activities.models import WorkoutPlanActivity
 from src.database.account.models import Account
 from src.api.dependencies import get_client_account, PaginationParams
 from src.database.client.models import ClientWorkoutPlan 
-from src.database.meal.models import ClientPrescribedMeal
+from src.database.meal.models import Meal, ClientPrescribedMeal
 from src.database.telemetry.models import (
     ClientTelemetry, 
     DailyMoodSurvey, 
@@ -107,6 +107,10 @@ class MealSurveySubmitPayload(SQLModel):
         if self.client_prescribed_meal_id is None and self.on_demand_meal_id is None:
             raise ValueError("Either client_prescribed_meal_id or on_demand_meal_id is required")
         return self
+
+class AvailableMealItem(SQLModel):
+    id: int
+    meal_name: str
 
 class DailySurveyResponse(SQLModel):
     survey_id: int
@@ -591,6 +595,18 @@ def submit_daily_steps_survey(
 
     return _create_survey_response(survey, telemetry, "step_count_id", DailyStepsSurveyResponse)
 
+
+@router.get("/daily-survey/meal/options", response_model=list[AvailableMealItem])
+@router.get("/meal/options", response_model=list[AvailableMealItem])
+def list_available_meals(
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account)
+):
+    if acc.client_id is None:
+        raise HTTPException(status_code=404, detail="Client profile not found")
+
+    meals = db.exec(select(Meal).order_by(Meal.id)).all()
+    return [AvailableMealItem(id=meal.id, meal_name=meal.meal_name) for meal in meals]
 
 @router.get("/daily-survey/meal/today", response_model=DailyMealSurveyResponse)
 def get_today_meal_survey(

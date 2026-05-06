@@ -1,5 +1,10 @@
+from typing import Optional
+
+from sqlmodel import SQLModel
+
 from src.api.roles.client.fitness import APIRouter, PaginationParams, Session, _get_or_create_telemetry, datetime, select
 from src.database.telemetry.models import ClientTelemetry, CompletedMealActivity, HealthMetrics, StepCount, CompletedSurvey, DailyMoodSurvey, CompletedWorkout
+from src.database.meal.models import Meal, ClientPrescribedMeal
 from src.api.roles.client.domain import StepCountUpdateInput, StepCountUpdateOutput, WeightUpdateInput
 from src.database.session import get_session
 from src.database.account.models import Account
@@ -9,6 +14,14 @@ from src.api.dependencies import get_client_account
 today = datetime.utcnow().date()
 
 router = APIRouter(prefix="/roles/client/telemetry", tags=["client", "telemetry"])
+
+class CompletedMealActivityWithInfo(SQLModel):
+    id: Optional[int] = None
+    client_prescribed_meal_id: Optional[int] = None
+    on_demand_meal_id: Optional[int] = None
+    client_telemetry_id: Optional[int] = None
+    last_updated: Optional[datetime] = None
+    meal_name: Optional[str] = None
 
 @router.put("/update_steps")
 def update_steps(step_count: StepCountUpdateInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
@@ -134,7 +147,7 @@ def query_workouts(
 
     return workouts
 
-@router.get("/query/meals", response_model=list[CompletedMealActivity])
+@router.get("/query/meals", response_model=list[CompletedMealActivityWithInfo])
 def query_meals(
     pagination: PaginationParams = Depends(PaginationParams),
     db: Session = Depends(get_session),
@@ -144,7 +157,31 @@ def query_meals(
         raise HTTPException(status_code=404, detail="Client profile not found")
 
     query = select(CompletedMealActivity).join(ClientTelemetry, CompletedMealActivity.client_telemetry_id == ClientTelemetry.id).where(ClientTelemetry.client_id == acc.client_id).order_by(CompletedMealActivity.id.desc())
+    completed_meals = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
 
-    meals = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+    meals_with_info = []
+    for meal in completed_meals:
+        meal_name = None
+        if meal.client_prescribed_meal_id is not None:
+            prescribed = db.get(ClientPrescribedMeal, meal.client_prescribed_meal_id)
+            if prescribed is not None:
+                prescribed_meal = db.get(Meal, prescribed.meal_id)
+                if prescribed_meal is not None:
+                    meal_name = prescribed_meal.meal_name
+        elif meal.on_demand_meal_id is not None:
+            on_demand = db.get(Meal, meal.on_demand_meal_id)
+            if on_demand is not None:
+                meal_name = on_demand.meal_name
 
-    return meals
+        meals_with_info.append(
+            CompletedMealActivityWithInfo(
+                id=meal.id,
+                client_prescribed_meal_id=meal.client_prescribed_meal_id,
+                on_demand_meal_id=meal.on_demand_meal_id,
+                client_telemetry_id=meal.client_telemetry_id,
+                last_updated=meal.last_updated,
+                meal_name=meal_name,
+            )
+        )
+
+    return meals_with_info
