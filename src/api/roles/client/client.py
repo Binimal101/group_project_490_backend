@@ -601,10 +601,10 @@ def get_review(coach_id: int, db = Depends(get_session), acc: Account = Depends(
 
     return ReviewsResponse(reviews=reviews)
 
-@router.get("/my_coach", response_model=MyCoachResponse)
+@router.get("/my_coach")
 def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
-    Returns the coach of a specific client
+    Returns the coach of a specific client with account information
     """
 
     if acc is None:
@@ -613,10 +613,10 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
     coach_request = db.query(ClientCoachRequest).filter(
         ClientCoachRequest.client_id == acc.client_id,
         ClientCoachRequest.is_accepted == True
-    ).order_by(ClientCoachRequest.last_modified).first()
+    ).order_by(ClientCoachRequest.last_updated).first()
 
     if coach_request is None:
-        raise HTTPException(403, detail="You do not have an accepted coach request")
+        raise HTTPException(404, detail="You do not have an accepted coach request")
 
     relationship = db.query(ClientCoachRelationship).filter(ClientCoachRelationship.request_id == coach_request.id).first()
 
@@ -625,7 +625,23 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
 
     coach = db.query(Coach).filter(Coach.id == coach_request.coach_id).first()
 
-    return MyCoachResponse(coach = coach)
+    if coach is None:
+        raise HTTPException(404, detail="Coach not found")
+
+    coach_account = db.query(Account).filter(Account.coach_id == coach.id).first()
+
+    return {
+        "coach_id": coach.id,
+        "id": coach.id,
+        "verified": coach.verified,
+        "specialties": coach.specialties,
+        "coach_availability": coach.coach_availability,
+        "name": coach_account.name if coach_account else f"Coach #{coach.id}",
+        "email": coach_account.email if coach_account else None,
+        "account_id": coach_account.id if coach_account else None,
+        "specialty": coach.specialties or "Active coach",
+        "relationship_id": relationship.id,
+    }
 
 @router.get("/my_coach_requests", response_model=MyCoachRequestsResponse)
 def get_my_coach_requests(db = Depends(get_session), acc: Account = Depends(get_client_account)):

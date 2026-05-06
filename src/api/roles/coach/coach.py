@@ -1,5 +1,5 @@
 from datetime import datetime, date, timedelta
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from src.api.dependencies import get_coach_account, get_client_account, get_admin_account
@@ -349,23 +349,75 @@ def get_coach_availability(coach_id: int, db = Depends(get_session), acc: Accoun
 
     return CoachAvailabilityResponse(coach_availabilities=availabilities)
 
-@router.get("/client_requests", response_model=RequestListResponse)
+@router.get("/client_requests")
 def get_client_requests(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
     """
-    Gets the list of all client requests for a given coach
+    Gets the list of all pending client requests for a given coach with full client details.
+    Returns list of {client_id, request_id, name, age, gender, pfp_url, goal} objects.
     """
     if acc.coach_id is None:
         raise HTTPException(404, detail="No coach profile found for this account")
-    
-    # return pending client requests (is_accepted IS NULL)
+
+    # Get pending client requests (is_accepted IS NULL)
     requests = db.query(ClientCoachRequest).filter(
         ClientCoachRequest.coach_id == acc.coach_id,
         ClientCoachRequest.is_accepted.is_(None)  # pending
     ).all()
 
-    items = [{"client_id": r.client_id, "request_id": r.id} for r in requests]
+    items = []
+    for request in requests:
+        # Get client account details
+        client_account = db.exec(select(Account).where(Account.client_id == request.client_id)).first()
+        # Get fitness goals
+        fitness_goals = db.exec(select(FitnessGoals).where(FitnessGoals.client_id == request.client_id)).all()
+
+        goal = fitness_goals[0].goal_enum if fitness_goals else "No goal set"
+
+        items.append({
+            "client_id": request.client_id,
+            "request_id": request.id,
+            "name": client_account.name if client_account else f"Client #{request.client_id}",
+            "age": client_account.age if client_account else None,
+            "gender": client_account.gender if client_account else None,
+            "pfp_url": client_account.pfp_url if client_account else None,
+            "goal": goal,
+        })
 
     return items
+
+
+@router.get("/clients")
+def get_my_accepted_clients(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
+    """
+    Gets the list of all accepted clients for the authenticated coach.
+    Only returns clients with active relationships (accepted requests with active relationship).
+    Returns list of {relationship_id, client_id, request_id} objects.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+
+    # Get all accepted requests for this coach that have active relationships
+    requests = db.query(ClientCoachRequest).filter(
+        ClientCoachRequest.coach_id == acc.coach_id,
+        ClientCoachRequest.is_accepted == True
+    ).all()
+
+    clients = []
+    for request in requests:
+        # Check if relationship is active
+        relationship = db.exec(select(ClientCoachRelationship).where(
+            ClientCoachRelationship.request_id == request.id,
+            ClientCoachRelationship.is_active == True
+        )).first()
+
+        if relationship:
+            clients.append({
+                "relationship_id": relationship.id,
+                "client_id": request.client_id,
+                "request_id": request.id
+            })
+
+    return clients
 
 
 @router.get("/lookup_client/{client_id}", response_model=ClientLookupResponse)

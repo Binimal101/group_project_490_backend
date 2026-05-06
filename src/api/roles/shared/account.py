@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, UploadFile, HTTPException
 
-from group_project_490_backend.src.database.admin.models import Admin
+from src.database.admin.models import Admin
 from src.database.session import get_session
 from src.database.account.models import Account, Availability
 from src.database.client.models import Client, FitnessGoals
