@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, UploadFile, HTTPException
 
+from src.database.admin.models import Admin
 from src.database.session import get_session
 from src.database.account.models import Account, Availability
 from src.database.client.models import Client, FitnessGoals
@@ -283,6 +284,11 @@ class ActivateAccountResponse(BaseModel):
     message: str
 
 
+class DeleteAccountResponse(BaseModel):
+    success: bool
+    message: str
+
+
 @router.post("/deactivate", response_model=DeactivateAccountResponse)
 def deactivate_account(
     db: Session = Depends(get_session),
@@ -321,6 +327,38 @@ def activate_account(
     db.commit()
     db.refresh(account)
     return ActivateAccountResponse(success=True, message="Account activated successfully.")
+
+
+@router.delete("/delete", response_model=DeleteAccountResponse)
+def delete_account(
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """
+    Permanently delete the current user's account and all associated data.
+    """
+    account = db.get(Account, acc.id)
+    if account is None:
+        raise HTTPException(404, detail="Account not found")
+
+    if account.client_id is not None:
+        client = db.get(Client, account.client_id)
+        if client:
+            db.delete(client)
+
+    if account.coach_id is not None:
+        coach = db.get(Coach, account.coach_id)
+        if coach:
+            db.delete(coach)
+
+    if account.admin_id is not None:
+        admin = db.get(Admin, account.admin_id)
+        if admin:
+            db.delete(admin)
+
+    db.delete(account)
+    db.commit()
+    return DeleteAccountResponse(success=True, message="Account deleted successfully.")
 
 
 @router.patch("/update", response_model=AccountResponse)
