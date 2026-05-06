@@ -15,6 +15,7 @@ class Account(SQLModelLU, table=True):
   name: str
   email: EmailStr = Field(index=True)
   is_active: bool = Field(default=True)
+  # status: str = Field(default="active")
 
   # auth, ONE of these needs to be here
   hashed_password: Optional[str] = Field(default=None)

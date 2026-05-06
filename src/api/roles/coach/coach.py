@@ -37,7 +37,18 @@ from src.database.workouts_and_activities.models import Workout, WorkoutEquiptme
 from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
 from src.database.session import get_session
 from src.database.account.models import Account, Availability, Notification
-from src.database.telemetry.models import HealthMetrics, ClientTelemetry
+from src.database.telemetry.models import (
+    HealthMetrics, 
+    ClientTelemetry, 
+    StepCount,
+    DailyMoodSurvey,
+    DailyWorkoutSurvey,
+    DailyBodyMetricsSurvey,
+    DailyStepsSurvey,
+    DailyMealSurvey,
+    CompletedMealActivity,
+    CompletedWorkout,
+)
 from src.database.coach.models import Coach, CoachCertifications, CoachExperience, CoachAvailability, Experience, Certifications
 from src.database.client.models import Client, FitnessGoals
 from src.database.role_management.models import CoachRequest
@@ -534,3 +545,121 @@ def get_coach_earnings(
     total = float(result) if result is not None else 0.0
 
     return CoachEarningsResponse(total_earnings=total, since=since)
+
+@router.get("/my_clients")
+def get_my_clients(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
+    """
+    Returns all active clients for the logged-in coach.
+    Includes Client, Account without password, and telemetry objects.
+    """
+
+    if acc.coach_id is None:
+        raise HTTPException(403, detail="Coach profile required")
+
+    relationships = db.exec(
+        select(ClientCoachRequest, ClientCoachRelationship)
+        .join(ClientCoachRelationship, ClientCoachRelationship.request_id == ClientCoachRequest.id)
+        .where(
+            ClientCoachRequest.coach_id == acc.coach_id,
+            ClientCoachRequest.is_accepted == True,
+            ClientCoachRelationship.is_active == True,
+            ClientCoachRelationship.client_blocked == False,
+            ClientCoachRelationship.coach_blocked == False,
+        )
+    ).all()
+
+    clients = []
+
+    for request, relationship in relationships:
+        client = db.get(Client, request.client_id)
+
+        account = db.exec(
+            select(Account).where(Account.client_id == request.client_id)
+        ).first()
+
+        telemetry_records = db.exec(
+            select(ClientTelemetry)
+            .where(ClientTelemetry.client_id == request.client_id)
+            .order_by(ClientTelemetry.date.desc())
+        ).all()
+
+        telemetry = []
+
+        for t in telemetry_records:
+            health_metrics = db.exec(
+                select(HealthMetrics).where(HealthMetrics.client_telemetry_id == t.id)
+            ).all()
+
+            step_counts = db.exec(
+                select(StepCount).where(StepCount.client_telemetry_id == t.id)
+            ).all()
+
+            mood_surveys = db.exec(
+                select(DailyMoodSurvey).where(DailyMoodSurvey.client_telemetry_id == t.id)
+            ).all()
+
+            workout_surveys = db.exec(
+                select(DailyWorkoutSurvey).where(DailyWorkoutSurvey.client_telemetry_id == t.id)
+            ).all()
+
+            body_metrics_surveys = db.exec(
+                select(DailyBodyMetricsSurvey).where(DailyBodyMetricsSurvey.client_telemetry_id == t.id)
+            ).all()
+
+            steps_surveys = db.exec(
+                select(DailyStepsSurvey).where(DailyStepsSurvey.client_telemetry_id == t.id)
+            ).all()
+
+            meal_surveys = db.exec(
+                select(DailyMealSurvey).where(DailyMealSurvey.client_telemetry_id == t.id)
+            ).all()
+
+            completed_meals = db.exec(
+                select(CompletedMealActivity).where(CompletedMealActivity.client_telemetry_id == t.id)
+            ).all()
+
+            completed_workouts = db.exec(
+                select(CompletedWorkout).where(CompletedWorkout.client_telemetry_id == t.id)
+            ).all()
+
+            telemetry.append({
+                "client_telemetry": t,
+                "health_metrics": health_metrics,
+                "step_counts": step_counts,
+                "mood_surveys": mood_surveys,
+                "workout_surveys": workout_surveys,
+                "body_metrics_surveys": body_metrics_surveys,
+                "steps_surveys": steps_surveys,
+                "meal_surveys": meal_surveys,
+                "completed_meals": completed_meals,
+                "completed_workouts": completed_workouts,
+            })
+
+        safe_account = None
+
+        if account:
+            safe_account = {
+                "id": account.id,
+                "name": account.name,
+                "email": account.email,
+                "is_active": account.is_active,
+                "status": account.status,
+                "gender": account.gender,
+                "bio": account.bio,
+                "age": account.age,
+                "pfp_url": account.pfp_url,
+                "client_id": account.client_id,
+                "coach_id": account.coach_id,
+                "admin_id": account.admin_id,
+                "created_at": account.created_at,
+            }
+
+        clients.append({
+            "relationship_id": relationship.id,
+            "request_id": request.id,
+            "client": client,
+            "account": safe_account,
+            "telemetry": telemetry,
+        })
+
+    return clients

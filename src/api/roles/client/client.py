@@ -39,8 +39,18 @@ from src.database.coach.models import Coach, Experience, Certifications, CoachEx
 from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
 from src.database.account.models import Account, Availability, Notification
 from src.database.client.models import Client, ClientAvailability, FitnessGoals
-from src.database.telemetry.models import HealthMetrics, ClientTelemetry
-from src.database.telemetry.models import ClientTelemetry
+from src.database.telemetry.models import (
+    HealthMetrics, 
+    ClientTelemetry, 
+    StepCount,
+    DailyMoodSurvey,
+    DailyWorkoutSurvey,
+    DailyBodyMetricsSurvey,
+    DailyStepsSurvey,
+    DailyMealSurvey,
+    CompletedMealActivity,
+    CompletedWorkout,
+)
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan
 
@@ -557,3 +567,148 @@ def get_my_coach_requests(db = Depends(get_session), acc: Account = Depends(get_
     requests = db.get(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).all()
 
     return MyCoachRequestsResponse(requests = requests)
+
+@router.get("/coach_profile/{coach_id}")
+def get_coach_profile(coach_id: int, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Allows a client to view a coach's profile given their ID.
+    Returns account basics, specialties, certifications, experiences,
+    pricing/payment plan, availability, and rating summary.
+    """
+
+    coach = db.get(Coach, coach_id)
+
+    if coach is None:
+        raise HTTPException(404, detail="Coach not found")
+
+    coach_account = db.exec(
+        select(Account).where(Account.coach_id == coach_id)
+    ).first()
+
+    if coach_account is None:
+        raise HTTPException(404, detail="Coach account not found")
+
+    certifications = db.exec(
+        select(Certifications)
+        .join(CoachCertifications, CoachCertifications.certification_id == Certifications.id)
+        .where(CoachCertifications.coach_id == coach_id)
+    ).all()
+
+    experiences = db.exec(
+        select(Experience)
+        .join(CoachExperience, CoachExperience.experience_id == Experience.id)
+        .where(CoachExperience.coach_id == coach_id)
+    ).all()
+
+    availability = db.exec(
+        select(Availability).where(
+            Availability.coach_availability_id == coach.coach_availability
+        )
+    ).all()
+
+    pricing_plan = db.exec(
+        select(PricingPlan).where(PricingPlan.coach_id == coach_id)
+    ).first()
+
+    rating_summary = db.exec(
+        select(
+            func.count(CoachReviews.id).label("rating_count"),
+            func.avg(CoachReviews.rating).label("avg_rating"),
+        ).where(CoachReviews.coach_id == coach_id)
+    ).first()
+
+    return {
+        "base_account": {
+            "id": coach_account.id,
+            "name": coach_account.name,
+            "email": coach_account.email,
+            "is_active": coach_account.is_active,
+            "status": coach_account.status,
+            "gender": coach_account.gender,
+            "bio": coach_account.bio,
+            "age": coach_account.age,
+            "pfp_url": coach_account.pfp_url,
+            "client_id": coach_account.client_id,
+            "coach_id": coach_account.coach_id,
+            "admin_id": coach_account.admin_id,
+            "created_at": coach_account.created_at,
+        },
+        "coach_account": coach,
+        "specialties": coach.specialties,
+        "certifications": certifications,
+        "experiences": experiences,
+        "pricing_plan": pricing_plan,
+        "availability": availability,
+        "rating_summary": {
+            "rating_count": int(rating_summary.rating_count or 0),
+            "avg_rating": float(rating_summary.avg_rating) if rating_summary.avg_rating is not None else None,
+        },
+    }
+
+
+@router.get("/progress_pictures")
+def get_progress_pictures(db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Queries progress picture URLs for the logged-in client.
+    Progress pictures are stored in HealthMetrics.progress_pic_url.
+    """
+
+    if acc.client_id is None:
+        raise HTTPException(403, detail="Client profile required")
+
+    pictures = db.exec(
+        select(
+            ClientTelemetry.date,
+            HealthMetrics.progress_pic_url,
+        )
+        .join(HealthMetrics, HealthMetrics.client_telemetry_id == ClientTelemetry.id)
+        .where(
+            ClientTelemetry.client_id == acc.client_id,
+            HealthMetrics.progress_pic_url.is_not(None),
+        )
+        .order_by(ClientTelemetry.date.desc())
+    ).all()
+
+    return [
+        {
+            "date": pic.date,
+            "progress_pic_url": pic.progress_pic_url,
+        }
+        for pic in pictures
+    ]
+
+
+@router.get("/my_coach")
+def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Returns the active coach relationship for the logged-in client.
+    """
+
+    if acc.client_id is None:
+        raise HTTPException(403, detail="Client profile required")
+
+    result = db.exec(
+        select(ClientCoachRequest, ClientCoachRelationship)
+        .join(ClientCoachRelationship, ClientCoachRelationship.request_id == ClientCoachRequest.id)
+        .where(
+            ClientCoachRequest.client_id == acc.client_id,
+            ClientCoachRequest.is_accepted == True,
+            ClientCoachRelationship.is_active == True,
+            ClientCoachRelationship.client_blocked == False,
+            ClientCoachRelationship.coach_blocked == False,
+        )
+    ).first()
+
+    if result is None:
+        raise HTTPException(404, detail="No active coach relationship found")
+
+    request, relationship = result
+
+    return {
+        "relationship_id": relationship.id,
+        "request_id": request.id,
+        "client_id": request.client_id,
+        "coach_id": request.coach_id,
+        "created_at": relationship.created_at,
+        "is_active": relationship.is_active,
+    }
