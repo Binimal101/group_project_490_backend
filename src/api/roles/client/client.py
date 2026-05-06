@@ -3,6 +3,7 @@ from typing import Optional, List
 from sqlmodel import Session, select
 from sqlalchemy import func, desc, asc, delete
 
+
 from src.api.dependencies import get_active_account, get_client_account, PaginationParams
 from src.api.storage import upload_public_file_to_supabase
 
@@ -47,6 +48,7 @@ from src.database.telemetry.models import (
     DailyMealSurvey,
     CompletedMealActivity,
     CompletedWorkout,
+    DailyProgressPicture,
 )
 from src.database.workouts_and_activities.models import WorkoutPlan
 from src.api.roles.client.fitness import (
@@ -621,8 +623,9 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
     
     coach_request = db.query(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).first()
 
-    if not coach_request.is_accepted:
-        raise HTTPException(403, detail="You are not authorized to see this coach until the request is accepted")
+    # If no request found or the request hasn't been accepted, surface as not found.
+    if coach_request is None or not getattr(coach_request, "is_accepted", False):
+        raise HTTPException(404, detail="No active coach relationship found")
     
     relationship = db.query(ClientCoachRelationship).filter(ClientCoachRelationship.request_id == coach_request.id).first()
 
@@ -701,7 +704,6 @@ def get_coach_profile(coach_id: int, db = Depends(get_session), acc: Account = D
             "name": coach_account.name,
             "email": coach_account.email,
             "is_active": coach_account.is_active,
-            "status": coach_account.status,
             "gender": coach_account.gender,
             "bio": coach_account.bio,
             "age": coach_account.age,
