@@ -3,6 +3,7 @@ import pytest
 from datetime import datetime, timedelta
 from src.database.workouts_and_activities.models import Equiptment, WorkoutType
 from src.database.client.models import ClientWorkoutPlan
+from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
 from tests.payload_tools.fitness import (
     build_create_workout_payload,
     build_create_activity_payload,
@@ -194,4 +195,101 @@ def test_client_query_plans(test_client, client_auth_header, seed_workout_activi
     
     # Assert data integrity
     assert any(p["workout_plan_id"] == workout_plan_id and p["client_id"] == client_id for p in data)
+
+
+def test_coach_can_prescribe_workout_plan_to_active_client(test_client, create_client, coach_auth_header, seed_workout_activity, db_session):
+    plan_payload = build_create_plan_payload(workout_activity_id=seed_workout_activity)
+    plan_response = test_client.post("/roles/shared/fitness/plan", json=plan_payload, headers=coach_auth_header)
+    assert plan_response.status_code == 200, plan_response.text
+    workout_plan_id = plan_response.json()["workout_plan_id"]
+
+    coach_me = test_client.post("/roles/coach/me", headers=coach_auth_header)
+    assert coach_me.status_code == 200
+    coach_id = coach_me.json()["coach_account"]["id"]
+
+    client_header, client_id = create_client(email_prefix="plan_prescribe_client")
+    request = ClientCoachRequest(client_id=client_id, coach_id=coach_id, is_accepted=True)
+    db_session.add(request)
+    db_session.flush()
+    db_session.add(ClientCoachRelationship(
+        request_id=request.id,
+        created_at=datetime.utcnow(),
+        is_active=True,
+        coach_blocked=False,
+        client_blocked=False,
+    ))
+    db_session.commit()
+
+    start_dt = datetime.utcnow()
+    end_dt = start_dt + timedelta(days=14)
+    prescribe_response = test_client.post(
+        "/roles/coach/prescribe_plan",
+        json={
+            "workout_plan_id": workout_plan_id,
+            "client_id": client_id,
+            "start_dt": start_dt.isoformat(),
+            "end_dt": end_dt.isoformat(),
+        },
+        headers=coach_auth_header,
+    )
+    assert prescribe_response.status_code == 200, prescribe_response.text
+    client_workout_plan_id = prescribe_response.json()["client_workout_plan_id"]
+
+    client_workout_plan = db_session.get(ClientWorkoutPlan, client_workout_plan_id)
+    assert client_workout_plan is not None
+    assert client_workout_plan.client_id == client_id
+    assert client_workout_plan.workout_plan_id == workout_plan_id
+
+    notification_response = test_client.get("/roles/shared/notifications/query", headers=client_header)
+    assert notification_response.status_code == 200
+    notifications = notification_response.json()
+    assert any(n["fav_category"] == "workout_plan" for n in notifications)
+
+
+def test_coach_cannot_prescribe_workout_plan_to_unrelated_client(test_client, create_client, coach_auth_header, seed_workout_activity):
+    plan_payload = build_create_plan_payload(workout_activity_id=seed_workout_activity)
+    plan_response = test_client.post("/roles/shared/fitness/plan", json=plan_payload, headers=coach_auth_header)
+    assert plan_response.status_code == 200, plan_response.text
+
+    _, client_id = create_client(email_prefix="unrelated_plan_client")
+    start_dt = datetime.utcnow()
+    response = test_client.post(
+        "/roles/coach/prescribe_plan",
+        json={
+            "workout_plan_id": plan_response.json()["workout_plan_id"],
+            "client_id": client_id,
+            "start_dt": start_dt.isoformat(),
+            "end_dt": (start_dt + timedelta(days=7)).isoformat(),
+        },
+        headers=coach_auth_header,
+    )
+    assert response.status_code == 403
+
+
+def test_client_can_assign_workout_plan_to_self(test_client, client_auth_header, seed_workout_activity, db_session):
+    plan_payload = build_create_plan_payload(workout_activity_id=seed_workout_activity)
+    plan_response = test_client.post("/roles/shared/fitness/plan", json=plan_payload, headers=client_auth_header)
+    assert plan_response.status_code == 200, plan_response.text
+    workout_plan_id = plan_response.json()["workout_plan_id"]
+
+    me_response = test_client.post("/roles/client/me", headers=client_auth_header)
+    assert me_response.status_code == 200
+    client_id = me_response.json()["base_account"]["client_id"]
+
+    start_dt = datetime.utcnow()
+    assign_response = test_client.post(
+        "/roles/client/assign_plan",
+        json={
+            "workout_plan_id": workout_plan_id,
+            "start_dt": start_dt.isoformat(),
+            "end_dt": (start_dt + timedelta(days=5)).isoformat(),
+        },
+        headers=client_auth_header,
+    )
+    assert assign_response.status_code == 200, assign_response.text
+
+    client_workout_plan = db_session.get(ClientWorkoutPlan, assign_response.json()["client_workout_plan_id"])
+    assert client_workout_plan is not None
+    assert client_workout_plan.client_id == client_id
+    assert client_workout_plan.workout_plan_id == workout_plan_id
 

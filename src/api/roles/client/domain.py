@@ -102,6 +102,11 @@ class UpdateClientInfoInput(BaseModel):
         
         return self #return the "safe" validated model, which is just itself (no need to cast / do anything else)
 
+class AssignWorkoutPlanInput(BaseModel):
+    workout_plan_id: int
+    start_dt: datetime
+    end_dt: datetime
+
 #Responses
 class MyCoachResponse(BaseModel):
     coach: Coach
@@ -123,6 +128,9 @@ class ReviewsResponse(BaseModel):
 
 class ClientCoachRequestResponse(BaseModel):
     request_id: int
+
+class AssignWorkoutPlanResponse(BaseModel):
+    client_workout_plan_id: int
 
 class CreateClientResponse(BaseModel):
     client_id: int
