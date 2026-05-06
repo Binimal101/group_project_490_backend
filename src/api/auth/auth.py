@@ -131,7 +131,7 @@ def google_oauth(request: Request, code: str | None = None, state: str | None = 
         resp = RedirectResponse(url + qs)
         
         #  store state in a cookie to verify on callback
-        resp.set_cookie("oauth_state", oauth_state, httponly=True, secure=True, samesite="lax")
+        resp.set_cookie("oauth_state", oauth_state, httponly=True, secure=True, samesite="none")
         return resp
 
     # Verify state from callback
