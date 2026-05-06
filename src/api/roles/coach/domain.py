@@ -257,3 +257,21 @@ class ClientReportResponse(BaseModel):
 
 class ReportsResponse(BaseModel):
     reports: List[ClientReport]
+
+
+# ─── Coach-view client workout plans ─────────────────────────────────────────
+
+class WorkoutActivityItem(BaseModel):
+    """A single activity within a client's prescribed workout plan."""
+    id: int
+    name: str
+    suggested_sets: Optional[int] = None
+    suggested_reps: Optional[int] = None
+    intensity_value: Optional[int] = None
+    intensity_measure: Optional[str] = None
+
+
+class ClientPlanItem(BaseModel):
+    """One prescribed workout plan (strata) with its enriched activity list."""
+    strata_name: str
+    activities: List[WorkoutActivityItem]

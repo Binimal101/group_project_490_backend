@@ -5,6 +5,9 @@ from sqlmodel import Session, select
 import os
 import secrets
 import requests
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
+from src import config
 
 from src.api.auth.domain import AuthTokenResponse, LoginRequest, SignupRequest
 from src.api.auth.services import create_account
@@ -100,44 +103,61 @@ def token(
     return issue_token(user)
 
 
-@router.get("/google")
-def google_oauth(request: Request, code: str | None = None, state: str | None = None, db: Session = Depends(get_session)):
-    """
-    OAuth2 Authorization Code flow for Google.
+from fastapi.responses import JSONResponse
 
-    - Calling GET /auth/google with no query params redirects to Google's consent screen.
+@router.get("/google/url")
+def google_oauth_url():
     """
-
+    Returns the Google OAuth login URL and sets the OAuth state cookie.
+    """
     client_id = os.getenv("GCP_CLIENT_ID")
     client_secret = os.getenv("GCP_CLIENT_SECRET")
     if not client_id or not client_secret:
         raise HTTPException(status_code=500, detail="GCP_CLIENT_ID and GCP_CLIENT_SECRET must be configured")
 
-    redirect_uri =  "https://api.till-failure.us/auth/google"
+    redirect_uri = os.getenv("OAUTH_REDIRECT_URI", "https://api.till-failure.us/auth/google")
 
+    oauth_state = secrets.token_urlsafe(16)
+    # create signed state to make flow completely stateless
+    to_encode = {"state": oauth_state, "exp": datetime.utcnow() + timedelta(minutes=15)}
+    signed_state = jwt.encode(to_encode, config.JWT_SECRET, algorithm=config.ALGORITHM)
+
+    params = {
+        "client_id": client_id,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "redirect_uri": redirect_uri,
+        "state": signed_state,
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    url = "https://accounts.google.com/o/oauth2/v2/auth"
+    qs = "?" + "&".join(f"{k}={requests.utils.requote_uri(str(v))}" for k, v in params.items())
+    
+    return JSONResponse({"url": url + qs})
+
+@router.get("/google")
+def google_oauth_callback(request: Request, code: str | None = None, state: str | None = None, db: Session = Depends(get_session)):
+    """
+    OAuth2 Authorization Code flow callback for Google.
+    """
     if code is None:
-        oauth_state = secrets.token_urlsafe(16)
-        params = {
-            "client_id": client_id,
-            "response_type": "code",
-            "scope": "openid email profile",
-            "redirect_uri": redirect_uri,
-            "state": oauth_state,
-            "access_type": "offline",
-            "prompt": "consent",
-        }
-        url = "https://accounts.google.com/o/oauth2/v2/auth"
-        qs = "?" + "&".join(f"{k}={requests.utils.requote_uri(str(v))}" for k, v in params.items())
-        resp = RedirectResponse(url + qs)
-        
-        #  store state in a cookie to verify on callback
-        resp.set_cookie("oauth_state", oauth_state, httponly=True, secure=True, samesite="lax")
-        return resp
+        raise HTTPException(status_code=400, detail="Missing code parameter")
+    if state is None:
+        raise HTTPException(status_code=400, detail="Missing state parameter")
 
-    # Verify state from callback
-    cookie_state = request.cookies.get("oauth_state")
-    if cookie_state is None or state is None or cookie_state != state:
+    # Verify stateless signed state
+    try:
+        jwt.decode(state, config.JWT_SECRET, algorithms=[config.ALGORITHM])
+    except JWTError:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
+    # Re-declare credentials needed for token exchange
+    client_id = os.getenv("GCP_CLIENT_ID")
+    client_secret = os.getenv("GCP_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=500, detail="GCP_CLIENT_ID and GCP_CLIENT_SECRET must be configured")
+    redirect_uri = os.getenv("OAUTH_REDIRECT_URI", "https://api.till-failure.us/auth/google")
 
     # Exchange code for tokens
     token_url = "https://oauth2.googleapis.com/token"
@@ -195,7 +215,8 @@ def google_oauth(request: Request, code: str | None = None, state: str | None = 
     token_resp = issue_token(user)
     jwt_token = token_resp.access_token
 
-    redirect_to = "https://till-failure.us/onboarding"
+    frontend_url = os.getenv("FRONTEND_URL", "https://till-failure.us")
+    redirect_to = f"{frontend_url}/onboarding"
     resp = RedirectResponse(redirect_to)
 
     cookie_value = requests.utils.requote_uri(jwt_token)
@@ -203,14 +224,15 @@ def google_oauth(request: Request, code: str | None = None, state: str | None = 
         "httponly": False,
         "secure": True,
         "samesite": "none",
-        "domain": ".till-failure.us",
         "max_age": 60 * 60 * 24 * 30,  # 30 days
     }
+    
+    cookie_domain = os.getenv("COOKIE_DOMAIN", ".till-failure.us")
+
+    if cookie_domain:
+        cookie_args["domain"] = cookie_domain
 
     # Set the readable cookie `jwt` so frontend JS can access it if needed.
     resp.set_cookie("jwt", cookie_value, **cookie_args)
-
-    # cleanup
-    resp.delete_cookie("oauth_state")
 
     return resp

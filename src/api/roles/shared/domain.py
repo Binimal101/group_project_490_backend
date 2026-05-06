@@ -36,10 +36,6 @@ class CreateWorkoutPlanInput(BaseModel):
     strata_name: str
     activities: List[WorkoutPlanActivityInput]
 
-class CreateNewChatInput(BaseModel):
-    relationship_id: int
-
-
 class ClientCoachContext(BaseModel):
     is_client: bool
     is_coach: bool
@@ -61,13 +57,11 @@ class UpdateAccountInput(BaseModel):
 
 #Responses
 class ChatWithAccountResponse(BaseModel):
+    chat_id: int
     messages: List[ChatMessage]
 
 class CreateWorkoutPlanResponse(BaseModel):
     workout_plan_id: int
-
-class NewChatResponse(BaseModel):
-    chat_id: int
 
 # /me sub-models
 
