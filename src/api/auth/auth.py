@@ -5,6 +5,9 @@ from sqlmodel import Session, select
 import os
 import secrets
 import requests
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
+from src import config
 
 from src.api.auth.domain import AuthTokenResponse, LoginRequest, SignupRequest
 from src.api.auth.services import create_account
@@ -115,30 +118,23 @@ def google_oauth_url():
     redirect_uri = os.getenv("OAUTH_REDIRECT_URI", "https://api.till-failure.us/auth/google")
 
     oauth_state = secrets.token_urlsafe(16)
+    # create signed state to make flow completely stateless
+    to_encode = {"state": oauth_state, "exp": datetime.utcnow() + timedelta(minutes=15)}
+    signed_state = jwt.encode(to_encode, config.JWT_SECRET, algorithm=config.ALGORITHM)
+
     params = {
         "client_id": client_id,
         "response_type": "code",
         "scope": "openid email profile",
         "redirect_uri": redirect_uri,
-        "state": oauth_state,
+        "state": signed_state,
         "access_type": "offline",
         "prompt": "consent",
     }
     url = "https://accounts.google.com/o/oauth2/v2/auth"
     qs = "?" + "&".join(f"{k}={requests.utils.requote_uri(str(v))}" for k, v in params.items())
     
-    resp = JSONResponse({"url": url + qs})
-    
-    cookie_domain = os.getenv("COOKIE_DOMAIN", ".till-failure.us")
-    resp.set_cookie(
-        "oauth_state", 
-        oauth_state, 
-        httponly=True, 
-        secure=True, 
-        samesite="none",
-        domain=cookie_domain
-    )
-    return resp
+    return JSONResponse({"url": url + qs})
 
 @router.get("/google")
 def google_oauth_callback(request: Request, code: str | None = None, state: str | None = None, db: Session = Depends(get_session)):
@@ -147,10 +143,13 @@ def google_oauth_callback(request: Request, code: str | None = None, state: str 
     """
     if code is None:
         raise HTTPException(status_code=400, detail="Missing code parameter")
+    if state is None:
+        raise HTTPException(status_code=400, detail="Missing state parameter")
 
-    # Verify state from callback
-    cookie_state = request.cookies.get("oauth_state")
-    if cookie_state is None or state is None or cookie_state != state:
+    # Verify stateless signed state
+    try:
+        jwt.decode(state, config.JWT_SECRET, algorithms=[config.ALGORITHM])
+    except JWTError:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
     # Exchange code for tokens
@@ -228,8 +227,5 @@ def google_oauth_callback(request: Request, code: str | None = None, state: str 
 
     # Set the readable cookie `jwt` so frontend JS can access it if needed.
     resp.set_cookie("jwt", cookie_value, **cookie_args)
-
-    # cleanup
-    resp.delete_cookie("oauth_state")
 
     return resp
