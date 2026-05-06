@@ -113,9 +113,7 @@ def google_oauth(request: Request, code: str | None = None, state: str | None = 
     if not client_id or not client_secret:
         raise HTTPException(status_code=500, detail="GCP_CLIENT_ID and GCP_CLIENT_SECRET must be configured")
 
-    request_host = request.url.hostname or ""
-    default_redirect = "https://api.till-failure.us/auth/google" if "till-failure.us" in request_host else str(request.url.replace(query=None))
-    redirect_uri = os.getenv("OAUTH_REDIRECT_URI", default_redirect)
+    redirect_uri = os.getenv("OAUTH_REDIRECT_URI", "https://api.till-failure.us/auth/google")
 
     if code is None:
         oauth_state = secrets.token_urlsafe(16)
@@ -133,8 +131,7 @@ def google_oauth(request: Request, code: str | None = None, state: str | None = 
         resp = RedirectResponse(url + qs)
         
         #  store state in a cookie to verify on callback
-        is_secure = request.url.scheme == "https"
-        resp.set_cookie("oauth_state", oauth_state, httponly=True, secure=is_secure, samesite="lax")
+        resp.set_cookie("oauth_state", oauth_state, httponly=True, secure=True, samesite="lax")
         return resp
 
     # Verify state from callback
@@ -205,15 +202,12 @@ def google_oauth(request: Request, code: str | None = None, state: str | None = 
     cookie_value = requests.utils.requote_uri(jwt_token)
     cookie_args = {
         "httponly": False,
-        "secure": is_secure,
-        "samesite": "lax",
+        "secure": True,
+        "samesite": "none",
         "max_age": 60 * 60 * 24 * 30,  # 30 days
     }
     
-    # Default to .till-failure.us for production subdomains, but skip for localhost/others
-    request_host = request.url.hostname or ""
-    default_domain = ".till-failure.us" if "till-failure.us" in request_host else None
-    cookie_domain = os.getenv("COOKIE_DOMAIN", default_domain)
+    cookie_domain = os.getenv("COOKIE_DOMAIN", ".till-failure.us")
 
     if cookie_domain:
         cookie_args["domain"] = cookie_domain
