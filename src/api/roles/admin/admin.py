@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 from sqlalchemy import delete
 from datetime import datetime
-from typing import List
+from typing import List, Literal
 
 from src.database.session import get_session
 from src.database.account.models import Account
@@ -11,11 +11,60 @@ from src.database.admin.models import Admin
 from src.api.dependencies import get_admin_account, PaginationParams
 from src.database.role_management.models import CoachRequest, RolePromotionResolution, Roles
 from src.database.payment.models import Invoice
-from src.api.roles.admin.domain import ResolveCoachRequestInput, PotentialCoachItem, AdminTransactionsResponse
+from src.api.roles.admin.domain import AdminAccountItem, ResolveCoachRequestInput, PotentialCoachItem, AdminTransactionsResponse
 
 from sqlmodel import func
 
 router = APIRouter(prefix="/roles/admin", tags=["admin"])
+
+def admin_account_role(account: Account) -> str:
+    if account.admin_id is not None:
+        return "admin"
+    if account.coach_id is not None:
+        return "coach"
+    return "client"
+
+def admin_account_roles(account: Account) -> List[str]:
+    roles: List[str] = []
+    if account.client_id is not None:
+        roles.append("client")
+    if account.coach_id is not None:
+        roles.append("coach")
+    if account.admin_id is not None:
+        roles.append("admin")
+    return roles or ["client"]
+
+def serialize_admin_account(account: Account) -> AdminAccountItem:
+    return AdminAccountItem(
+        id=account.id,
+        name=account.name,
+        email=str(account.email),
+        role=admin_account_role(account),
+        roles=admin_account_roles(account),
+        status="active" if account.is_active else "deactivated",
+        is_active=account.is_active,
+        created_at=account.created_at,
+        last_active=None,
+    )
+
+@router.get("/accounts", response_model=List[AdminAccountItem])
+def query_accounts(
+    pagination: PaginationParams = Depends(PaginationParams),
+    sort_by: Literal["name", "email"] = Query("name", description="Account field to sort by"),
+    sort_dir: Literal["asc", "desc"] = Query("asc", description="Sort direction"),
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_admin_account),
+):
+    sort_column = Account.name if sort_by == "name" else Account.email
+    sort_expression = sort_column.desc() if sort_dir == "desc" else sort_column.asc()
+    accounts = db.exec(
+        select(Account)
+        .order_by(sort_expression, Account.id.asc())
+        .offset(pagination.skip)
+        .limit(pagination.limit)
+    ).all()
+
+    return [serialize_admin_account(account) for account in accounts if account.id is not None]
 
 @router.get("/total_transactions", response_model=AdminTransactionsResponse)
 def get_total_transactions(db = Depends(get_session), acc: Account = Depends(get_admin_account)):
