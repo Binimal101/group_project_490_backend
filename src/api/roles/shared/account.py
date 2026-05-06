@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, UploadFile, HTTPException
 
+from group_project_490_backend.src.database.admin.models import Admin
 from src.database.session import get_session
 from src.database.account.models import Account, Availability
 from src.database.client.models import Client, FitnessGoals
@@ -339,6 +340,21 @@ def delete_account(
     account = db.get(Account, acc.id)
     if account is None:
         raise HTTPException(404, detail="Account not found")
+
+    if account.client_id is not None:
+        client = db.get(Client, account.client_id)
+        if client:
+            db.delete(client)
+
+    if account.coach_id is not None:
+        coach = db.get(Coach, account.coach_id)
+        if coach:
+            db.delete(coach)
+
+    if account.admin_id is not None:
+        admin = db.get(Admin, account.admin_id)
+        if admin:
+            db.delete(admin)
 
     db.delete(account)
     db.commit()
