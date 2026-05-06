@@ -285,6 +285,9 @@ class ActivateAccountResponse(BaseModel):
 
 
 def get_affected_accounts(db: Session, account: Account) -> list[Account]:
+    """
+    Finds active client-coach relationship accounts affected by account deactivation.
+    """
     affected_accounts_by_id: dict[int, Account] = {}
 
     def add_affected_account(affected_account: Account | None):
@@ -344,6 +347,9 @@ def notify_affected_accounts(
     deactivated_account: Account,
     affected_accounts: list[Account],
 ):
+    """
+    Creates notification records for accounts affected by a user's deactivation.
+    """
     for affected_account in affected_accounts:
         if affected_account.id is None:
             continue
@@ -450,7 +456,7 @@ def activate_account(
     acc: Account = Depends(get_account_even_if_inactive),
 ):
     """
-    Activate the current user's account. This sets is_active to True and allows login/access.
+    Reactivate the current user's account. This sets is_active to True and allows login/access.
     """
     account = db.get(Account, acc.id)
     if account is None:

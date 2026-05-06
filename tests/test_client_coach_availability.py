@@ -16,6 +16,12 @@ from tests.payload_tools.coach import (
 
 
 def test_client_can_fetch_coach_availability(test_client, client_auth_header, db_session):
+    """Integration test: a client can create a coach request, have the coach verified,
+    and then fetch that coach's availability via the client-prefixed endpoint.
+
+    Verifies HTTP status and that the returned availability list contains
+    the expected fields (weekday, start_time, end_time).
+    """
     # Create a coach (starts unverified) with availability via the coach creation endpoint
     payload = build_coach_request_payload(weekday="monday")
     resp = test_client.post("/roles/coach/request_coach_creation", json=payload, headers=client_auth_header)
