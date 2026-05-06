@@ -1,8 +1,21 @@
 from pydantic import BaseModel, model_validator
+from datetime import datetime
 from typing import List, Optional
 
 from src.api.roles.coach.domain import AccountPublic
 from src.database.coach.models import Experience, Certifications
+
+
+class AdminAccountItem(BaseModel):
+    id: int
+    name: str
+    email: str
+    role: str
+    roles: List[str]
+    status: str
+    is_active: bool
+    created_at: Optional[datetime] = None
+    last_active: Optional[str] = None
 
 
 class PotentialCoachItem(BaseModel):
