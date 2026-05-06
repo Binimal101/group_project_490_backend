@@ -113,7 +113,9 @@ def google_oauth(request: Request, code: str | None = None, state: str | None = 
     if not client_id or not client_secret:
         raise HTTPException(status_code=500, detail="GCP_CLIENT_ID and GCP_CLIENT_SECRET must be configured")
 
-    redirect_uri =  "https://api.till-failure.us/auth/google"
+    request_host = request.url.hostname or ""
+    default_redirect = "https://api.till-failure.us/auth/google" if "till-failure.us" in request_host else str(request.url.replace(query=None))
+    redirect_uri = os.getenv("OAUTH_REDIRECT_URI", default_redirect)
 
     if code is None:
         oauth_state = secrets.token_urlsafe(16)
@@ -131,7 +133,8 @@ def google_oauth(request: Request, code: str | None = None, state: str | None = 
         resp = RedirectResponse(url + qs)
         
         #  store state in a cookie to verify on callback
-        resp.set_cookie("oauth_state", oauth_state, httponly=True, secure=True, samesite="lax")
+        is_secure = request.url.scheme == "https"
+        resp.set_cookie("oauth_state", oauth_state, httponly=True, secure=is_secure, samesite="lax")
         return resp
 
     # Verify state from callback
@@ -195,17 +198,25 @@ def google_oauth(request: Request, code: str | None = None, state: str | None = 
     token_resp = issue_token(user)
     jwt_token = token_resp.access_token
 
-    redirect_to = "https://till-failure.us/onboarding"
+    frontend_url = os.getenv("FRONTEND_URL", "https://till-failure.us")
+    redirect_to = f"{frontend_url}/onboarding"
     resp = RedirectResponse(redirect_to)
 
     cookie_value = requests.utils.requote_uri(jwt_token)
     cookie_args = {
         "httponly": False,
-        "secure": True,
-        "samesite": "none",
-        "domain": ".till-failure.us",
+        "secure": is_secure,
+        "samesite": "lax",
         "max_age": 60 * 60 * 24 * 30,  # 30 days
     }
+    
+    # Default to .till-failure.us for production subdomains, but skip for localhost/others
+    request_host = request.url.hostname or ""
+    default_domain = ".till-failure.us" if "till-failure.us" in request_host else None
+    cookie_domain = os.getenv("COOKIE_DOMAIN", default_domain)
+
+    if cookie_domain:
+        cookie_args["domain"] = cookie_domain
 
     # Set the readable cookie `jwt` so frontend JS can access it if needed.
     resp.set_cookie("jwt", cookie_value, **cookie_args)
