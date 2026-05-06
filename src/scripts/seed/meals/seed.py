@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,7 @@ def resolve_account_id(conn: Any, account_data: dict | None, default_account_id:
     return default_account_id
 
 
-def get_or_create_unit(conn: Any, unit_name: str, is_imperial: bool) -> tuple[int, bool]:
+def get_or_create_unit(conn: Any, unit_name: str, is_imperial: bool, last_updated: datetime) -> tuple[int, bool]:
     unit_name = unit_name.strip()
     row = conn.execute(
         text(
@@ -50,14 +51,18 @@ def get_or_create_unit(conn: Any, unit_name: str, is_imperial: bool) -> tuple[in
 
     res = conn.execute(
         text(
-            "INSERT INTO unit (unit_name, is_imperial) VALUES (:unit_name, :is_imperial) RETURNING id"
+            "INSERT INTO unit (unit_name, is_imperial, last_updated) VALUES (:unit_name, :is_imperial, :last_updated) RETURNING id"
         ),
-        {"unit_name": unit_name, "is_imperial": is_imperial},
+        {
+            "unit_name": unit_name,
+            "is_imperial": is_imperial,
+            "last_updated": last_updated,
+        },
     )
     return res.scalar(), True
 
 
-def get_or_create_portion_size(conn: Any, unit_id: int, count: int) -> tuple[int, bool]:
+def get_or_create_portion_size(conn: Any, unit_id: int, count: int, last_updated: datetime) -> tuple[int, bool]:
     row = conn.execute(
         text(
             "SELECT id FROM portion_size WHERE unit_id = :unit_id AND count = :count"
@@ -69,14 +74,20 @@ def get_or_create_portion_size(conn: Any, unit_id: int, count: int) -> tuple[int
 
     res = conn.execute(
         text(
-            "INSERT INTO portion_size (unit_id, count) VALUES (:unit_id, :count) RETURNING id"
+            "INSERT INTO portion_size (unit_id, count, last_updated) VALUES (:unit_id, :count, :last_updated) RETURNING id"
         ),
-        {"unit_id": unit_id, "count": count},
+        {"unit_id": unit_id, "count": count, "last_updated": last_updated},
     )
     return res.scalar(), True
 
 
-def get_or_create_meal(conn: Any, meal_name: str, created_by_account_id: int) -> tuple[int, bool]:
+def parse_datetime(value: str) -> datetime:
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    return datetime.fromisoformat(value)
+
+
+def get_or_create_meal(conn: Any, meal_name: str, created_by_account_id: int, last_updated: datetime) -> tuple[int, bool]:
     row = conn.execute(
         text("SELECT id FROM meal WHERE meal_name = :meal_name"),
         {"meal_name": meal_name},
@@ -86,9 +97,13 @@ def get_or_create_meal(conn: Any, meal_name: str, created_by_account_id: int) ->
 
     res = conn.execute(
         text(
-            "INSERT INTO meal (created_by_account_id, meal_name) VALUES (:created_by_account_id, :meal_name) RETURNING id"
+            "INSERT INTO meal (created_by_account_id, meal_name, last_updated) VALUES (:created_by_account_id, :meal_name, :last_updated) RETURNING id"
         ),
-        {"created_by_account_id": created_by_account_id, "meal_name": meal_name},
+        {
+            "created_by_account_id": created_by_account_id,
+            "meal_name": meal_name,
+            "last_updated": last_updated,
+        },
     )
     return res.scalar(), True
 
@@ -141,18 +156,33 @@ def main() -> None:
     with engine.begin() as conn:
         for meal in meals:
             creator_id = resolve_account_id(conn, meal, default_account_id)
-            meal_id, meal_created = get_or_create_meal(conn, meal["meal_name"], creator_id)
+            last_updated = meal.get("last_updated")
+            if last_updated:
+                last_updated = parse_datetime(last_updated)
+            else:
+                last_updated = datetime.now(timezone.utc)
+            meal_id, meal_created = get_or_create_meal(conn, meal["meal_name"], creator_id, last_updated)
             if meal_created:
                 inserted_meals += 1
 
             for ingredient in meal.get("ingredients", []):
                 ingredient_name = ingredient["ingredient_name"].strip()
                 portion = ingredient["portion_size"]
-                unit_id, unit_created = get_or_create_unit(conn, portion["unit_name"], bool(portion["is_imperial"]))
+                unit_id, unit_created = get_or_create_unit(
+                    conn,
+                    portion["unit_name"],
+                    bool(portion["is_imperial"]),
+                    last_updated,
+                )
                 if unit_created:
                     inserted_units += 1
 
-                portion_size_id, portion_created = get_or_create_portion_size(conn, unit_id, int(portion["count"]))
+                portion_size_id, portion_created = get_or_create_portion_size(
+                    conn,
+                    unit_id,
+                    int(portion["count"]),
+                    last_updated,
+                )
                 if portion_created:
                     inserted_portions += 1
 
@@ -160,14 +190,15 @@ def main() -> None:
                     if not meal_ingredient_exists(conn, meal_id, ingredient_name, portion_size_id, int(ingredient["calories"])):
                         conn.execute(
                             text(
-                                "INSERT INTO meal_ingredient (meal_id, ingredient_name, portion_size_id, calories) "
-                                "VALUES (:meal_id, :ingredient_name, :portion_size_id, :calories)"
+                                "INSERT INTO meal_ingredient (meal_id, ingredient_name, portion_size_id, calories, last_updated) "
+                                "VALUES (:meal_id, :ingredient_name, :portion_size_id, :calories, :last_updated)"
                             ),
                             {
                                 "meal_id": meal_id,
                                 "ingredient_name": ingredient_name,
                                 "portion_size_id": portion_size_id,
                                 "calories": int(ingredient["calories"]),
+                                "last_updated": last_updated,
                             },
                         )
                         inserted_ingredients += 1

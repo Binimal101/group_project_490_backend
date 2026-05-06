@@ -10,9 +10,6 @@ from typing import Any
 from sqlalchemy import text
 from sqlmodel import create_engine
 
-from src.api.auth.services import hash_password
-from src.database.account.models import Weekday
-
 
 def choose_env() -> str:
     print("Choose target environment:")
@@ -48,6 +45,8 @@ def get_or_create_account(conn: Any, account_data: dict) -> tuple[int, bool]:
         if coach_id is not None:
             raise RuntimeError(f"Account {account_data['email']} already has coach_id={coach_id}")
         return account_id, False
+
+    from src.api.auth.services import hash_password
 
     now = datetime.now(timezone.utc)
     res = conn.execute(
@@ -170,13 +169,19 @@ def get_or_create_experience(conn: Any, exp_data: dict) -> int:
     return res.scalar()
 
 
-def get_or_create_pricing_plan(conn: Any, coach_id: int, payment_interval: str, price_cents: int) -> int:
+def get_or_create_pricing_plan(conn: Any, coach_id: int, payment_interval: str, price_cents: int, open_to_entry: bool = True) -> int:
     row = conn.execute(
         text(
             "SELECT id FROM pricing_plan WHERE coach_id = :coach_id "
-            "AND payment_interval = :interval AND price_cents = :price"
+            "AND payment_interval = :interval AND price_cents = :price "
+            "AND open_to_entry = :open_to_entry"
         ),
-        {"coach_id": coach_id, "interval": payment_interval, "price": price_cents},
+        {
+            "coach_id": coach_id,
+            "interval": payment_interval,
+            "price": price_cents,
+            "open_to_entry": open_to_entry,
+        },
     ).first()
     if row:
         return row[0]
@@ -184,10 +189,16 @@ def get_or_create_pricing_plan(conn: Any, coach_id: int, payment_interval: str, 
     now = datetime.now(timezone.utc)
     res = conn.execute(
         text(
-            "INSERT INTO pricing_plan (coach_id, payment_interval, price_cents, last_updated) "
-            "VALUES (:coach_id, :interval, :price, :last_updated) RETURNING id"
+            "INSERT INTO pricing_plan (coach_id, payment_interval, price_cents, open_to_entry, last_updated) "
+            "VALUES (:coach_id, :interval, :price, :open_to_entry, :last_updated) RETURNING id"
         ),
-        {"coach_id": coach_id, "interval": payment_interval, "price": price_cents, "last_updated": now},
+        {
+            "coach_id": coach_id,
+            "interval": payment_interval,
+            "price": price_cents,
+            "open_to_entry": open_to_entry,
+            "last_updated": now,
+        },
     )
     return res.scalar()
 
@@ -198,6 +209,8 @@ def insert_coach_availability(conn: Any) -> int:
 
 
 def create_availabilities(conn: Any, coach_availability_id: int, availabilities: list[dict]) -> int:
+    from src.database.account.models import Weekday
+
     inserted = 0
     for avail in availabilities:
         now = datetime.now(timezone.utc)
@@ -235,7 +248,7 @@ def create_resolution(conn: Any, coach_request_id: int, admin_id: int, account_i
             "INSERT INTO role_promotion_resolution (role, admin_id, account_id, is_approved, last_updated) "
             "VALUES (:role, :admin_id, :account_id, :approved, :last_updated) RETURNING id"
         ),
-        {"role": "coach", "admin_id": admin_id, "account_id": account_id, "approved": approve, "last_updated": now},
+        {"role": "COACH", "admin_id": admin_id, "account_id": account_id, "approved": approve, "last_updated": now},
     )
     resolution_id = res.scalar()
     conn.execute(
@@ -291,6 +304,8 @@ def main() -> None:
         os.environ.pop("IS_TESTING", None)
 
     from src import config
+    from src.api.auth.services import hash_password
+    from src.database.account.models import Weekday
 
     engine = create_engine(config.DATABASE_URL, echo=False)
     data_path = Path(__file__).parent / "coaches.json"
@@ -356,7 +371,13 @@ def main() -> None:
                 link_coach_experience(conn, coach_id, exp_id)
                 inserted_experiences += 1
 
-            pricing_id = get_or_create_pricing_plan(conn, coach_id, coach_details["payment_interval"], coach_details["price_cents"])
+            pricing_id = get_or_create_pricing_plan(
+                conn,
+                coach_id,
+                coach_details["payment_interval"],
+                coach_details["price_cents"],
+                coach_details.get("open_to_entry", True),
+            )
             inserted_pricing_plans += 1
 
             request_id = create_coach_request(conn, coach_id)

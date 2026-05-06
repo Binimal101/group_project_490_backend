@@ -32,8 +32,9 @@
           "certification_organization": "NASM"
         }
       ],
-      "payment_interval": "monthly",
-      "price_cents": 15000
+      "payment_interval": "MONTHLY",
+      "price_cents": 15000,
+      "open_to_entry": true
     },
     "approve": true
   },
@@ -70,8 +71,9 @@
           "certification_organization": "RRCA"
         }
       ],
-      "payment_interval": "monthly",
-      "price_cents": 13000
+      "payment_interval": "MONTHLY",
+      "price_cents": 13000,
+      "open_to_entry": true
     },
     "approve": true
   },
@@ -108,8 +110,9 @@
           "certification_organization": "Precision Nutrition"
         }
       ],
-      "payment_interval": "yearly",
-      "price_cents": 120000
+      "payment_interval": "YEARLY",
+      "price_cents": 120000,
+      "open_to_entry": true
     },
     "approve": true
   },
@@ -146,8 +149,9 @@
           "certification_organization": "ACE"
         }
       ],
-      "payment_interval": "monthly",
-      "price_cents": 14000
+      "payment_interval": "MONTHLY",
+      "price_cents": 14000,
+      "open_to_entry": true
     },
     "approve": true
   },
@@ -184,8 +188,9 @@
           "certification_organization": "Yoga Alliance"
         }
       ],
-      "payment_interval": "monthly",
-      "price_cents": 11000
+      "payment_interval": "MONTHLY",
+      "price_cents": 11000,
+      "open_to_entry": true
     },
     "approve": true
   }
