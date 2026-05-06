@@ -111,8 +111,15 @@ class AssignWorkoutPlanInput(BaseModel):
 class MyCoachResponse(BaseModel):
     coach: Coach
 
+class CoachRequestItem(BaseModel):
+    id: int
+    coach_id: int
+    coach_name: str
+    is_accepted: Optional[bool]
+    created_at: Optional[datetime]
+
 class MyCoachRequestsResponse(BaseModel):
-    requests : List[ClientCoachRequest]
+    requests : List[CoachRequestItem]
 
 class CoachReportResponse(BaseModel):
     report_id: int

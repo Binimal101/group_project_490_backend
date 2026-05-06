@@ -646,7 +646,7 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
 @router.get("/my_coach_requests", response_model=MyCoachRequestsResponse)
 def get_my_coach_requests(db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
-    Returns all coach requests for a specific client
+    Returns all coach requests for a specific client, enriched with coach names
     """
 
     if acc is None:
@@ -654,7 +654,19 @@ def get_my_coach_requests(db = Depends(get_session), acc: Account = Depends(get_
 
     requests = db.query(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).all()
 
-    return MyCoachRequestsResponse(requests = requests)
+    result = []
+    for req in requests:
+        coach_account = db.exec(select(Account).where(Account.coach_id == req.coach_id)).first()
+        coach_name = coach_account.name if coach_account else f"Coach #{req.coach_id}"
+        result.append({
+            "id": req.id,
+            "coach_id": req.coach_id,
+            "coach_name": coach_name,
+            "is_accepted": req.is_accepted,
+            "created_at": req.created_at,
+        })
+
+    return MyCoachRequestsResponse(requests=result)
 
 @router.post("/pay_invoice/{invoice_id}", response_model=PayInvoiceResponse)
 def pay_invoice(invoice_id: int, payload: PayInvoiceInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
