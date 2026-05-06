@@ -161,3 +161,18 @@ class ClientBillingCycleResponse(BaseModel):
 
 class ClientBillingCyclesListResponse(BaseModel):
     cycles: List[ClientBillingCycleResponse]
+
+class PayInvoiceInput(BaseModel):
+    amount: float
+
+    @field_validator("amount")
+    @classmethod
+    def amount_must_be_positive(cls, v):
+        if v <= 0:
+            raise ValueError("Payment amount must be greater than 0")
+        return v
+
+class PayInvoiceResponse(BaseModel):
+    invoice_id: int
+    amount_paid: float
+    remaining_balance: float

@@ -27,6 +27,8 @@ from src.api.roles.client.domain import (
     ClientBillingCycleResponse,
     AssignWorkoutPlanInput,
     AssignWorkoutPlanResponse,
+    PayInvoiceInput,
+    PayInvoiceResponse,
 )
 
 from src.api.roles.shared.domain import DeleteRequestResponse
@@ -607,17 +609,20 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
 
     if acc is None:
         raise HTTPException(404, detail="Account not found")
-    
-    coach_request = db.query(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).first()
 
-    if not coach_request.is_accepted:
-        raise HTTPException(403, detail="You are not authorized to see this coach until the request is accepted")
-    
+    coach_request = db.query(ClientCoachRequest).filter(
+        ClientCoachRequest.client_id == acc.client_id,
+        ClientCoachRequest.is_accepted == True
+    ).order_by(ClientCoachRequest.last_modified).first()
+
+    if coach_request is None:
+        raise HTTPException(403, detail="You do not have an accepted coach request")
+
     relationship = db.query(ClientCoachRelationship).filter(ClientCoachRelationship.request_id == coach_request.id).first()
 
     if relationship is None:
         raise HTTPException(404, detail="Relationship not Found")
-    
+
     coach = db.query(Coach).filter(Coach.id == coach_request.coach_id).first()
 
     return MyCoachResponse(coach = coach)
@@ -630,7 +635,60 @@ def get_my_coach_requests(db = Depends(get_session), acc: Account = Depends(get_
 
     if acc is None:
         raise HTTPException(404, detail="Account not found")
-    
+
     requests = db.query(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).all()
 
     return MyCoachRequestsResponse(requests = requests)
+
+@router.post("/pay_invoice/{invoice_id}", response_model=PayInvoiceResponse)
+def pay_invoice(invoice_id: int, payload: PayInvoiceInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Make a payment towards an invoice.
+    Verifies the invoice belongs to the authenticated client,
+    that the payment amount is valid (> 0 and <= outstanding balance),
+    updates the outstanding balance, and notifies the coach.
+    """
+    invoice = db.get(Invoice, invoice_id)
+
+    if invoice is None:
+        raise HTTPException(404, detail="Invoice not found")
+
+    if invoice.client_id != acc.client_id:
+        raise HTTPException(403, detail="This invoice does not belong to you")
+
+    if payload.amount > invoice.outstanding_balance:
+        raise HTTPException(400, detail=f"Payment amount exceeds outstanding balance of ${invoice.outstanding_balance:.2f}")
+
+    billing_cycle = db.get(BillingCycle, invoice.billing_cycle_id)
+    if billing_cycle is None:
+        raise HTTPException(404, detail="Billing cycle not found")
+
+    pricing_plan = db.get(PricingPlan, billing_cycle.pricing_plan_id)
+    if pricing_plan is None:
+        raise HTTPException(404, detail="Pricing plan not found")
+
+    coach_account = db.exec(
+        select(Account).where(Account.coach_id == pricing_plan.coach_id)
+    ).first()
+
+    if coach_account is None:
+        raise HTTPException(404, detail="Coach account not found")
+
+    invoice.outstanding_balance -= payload.amount
+    db.add(invoice)
+    db.commit()
+
+    notification = Notification(
+        account_id=coach_account.id,
+        fav_category="payment_received",
+        message=f"Payment received from {acc.name}",
+        details=f"{acc.name} paid ${payload.amount:.2f} towards invoice {invoice_id}.",
+    )
+    db.add(notification)
+    db.commit()
+
+    return PayInvoiceResponse(
+        invoice_id=invoice_id,
+        amount_paid=payload.amount,
+        remaining_balance=invoice.outstanding_balance,
+    )
