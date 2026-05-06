@@ -240,6 +240,16 @@ def create_coach_request(coach_id: int, db = Depends(get_session), acc: Account 
 
     if coach is None:
         raise HTTPException(404, detail="Coach not found")
+
+    coach_account = db.exec(
+        select(Account).where(
+            Account.coach_id == coach.id,
+            Account.is_active == True,
+        )
+    ).first()
+
+    if coach_account is None or not coach.verified:
+        raise HTTPException(404, detail="Coach not available")
     
     existing_request = db.query(ClientCoachRequest).filter_by(
         client_id=client.id, coach_id=coach.id, is_accepted=None
@@ -256,7 +266,6 @@ def create_coach_request(coach_id: int, db = Depends(get_session), acc: Account 
     db.refresh(request)
 
     # notify the coach's account that a new request was created
-    coach_account = db.exec(select(Account).where(Account.coach_id == coach.id)).first()
     if coach_account and coach_account.id is not None:
         n = Notification(
             account_id=coach_account.id,
@@ -607,8 +616,20 @@ def get_review(coach_id: int, db = Depends(get_session), acc: Account = Depends(
     
     if acc.client_id is None:
         raise HTTPException(403, detail="You are not authorized to view this content")
-    
-    reviews = db.query(CoachReviews).filter(CoachReviews.coach_id == coach_id).all()
+
+    coach_account = db.exec(
+        select(Account).where(
+            Account.coach_id == coach_id,
+            Account.is_active == True,
+        )
+    ).first()
+
+    if coach_account is None:
+        return ReviewsResponse(reviews=[])
+
+    reviews = db.exec(
+        select(CoachReviews).where(CoachReviews.coach_id == coach_id)
+    ).all()
 
     return ReviewsResponse(reviews=reviews)
 
@@ -668,6 +689,9 @@ def get_coach_profile(coach_id: int, db = Depends(get_session), acc: Account = D
 
     if coach_account is None:
         raise HTTPException(404, detail="Coach account not found")
+
+    if not coach_account.is_active or not coach.verified:
+        raise HTTPException(404, detail="Coach not available")
 
     certifications = db.exec(
         select(Certifications)

@@ -1,7 +1,9 @@
 from tests.payload_tools.auth import build_signup_payload, build_login_payload
 from tests.payload_tools.client import build_client_init_payload
 from tests.payload_tools.coach import build_coach_request_payload
+from sqlmodel import select
 
+from src.database.account.models import Account
 from src.database.reports.models import CoachReviews
 from src.database.coach.models import Coach
 
@@ -116,3 +118,73 @@ def test_hirable_coaches_pagination_and_unauthorized(test_client, client_auth_he
     )
     assert resp2.status_code == 401
     assert resp2.json().get("detail") is not None
+
+
+def test_deactivated_coach_is_hidden_and_cannot_be_requested(
+    test_client,
+    db_session,
+    admin_auth_header,
+    client_auth_header,
+    create_client,
+):
+    coach_id, coach_header = _create_and_verify_coach(
+        test_client,
+        db_session,
+        admin_auth_header,
+        "Hidden Coach",
+        "coach_hidden",
+        specialties="mobility",
+    )
+    reviewer_header, reviewer_client_id = create_client(email_prefix="hidden_review")
+    _add_review(db_session, coach_id, reviewer_client_id, 5.0)
+
+    deactivate_resp = test_client.post(
+        "/roles/shared/account/deactivate",
+        headers=coach_header,
+    )
+    assert deactivate_resp.status_code == 200, deactivate_resp.text
+
+    search_resp = test_client.get(
+        "/roles/client/query/hirable_coaches?specialty=mobility",
+        headers=client_auth_header,
+    )
+    assert search_resp.status_code == 200
+    assert all(item["coach_id"] != coach_id for item in search_resp.json())
+
+    request_resp = test_client.post(
+        f"/roles/client/request_coach/{coach_id}",
+        headers=client_auth_header,
+    )
+    assert request_resp.status_code == 404
+
+    profile_resp = test_client.get(
+        f"/roles/client/coach_profile/{coach_id}",
+        headers=client_auth_header,
+    )
+    assert profile_resp.status_code == 404
+
+    reviews_resp = test_client.get(
+        f"/roles/client/review/{coach_id}",
+        headers=client_auth_header,
+    )
+    assert reviews_resp.status_code == 200
+    assert reviews_resp.json()["reviews"] == []
+
+    activate_resp = test_client.post(
+        "/roles/shared/account/activate",
+        headers=coach_header,
+    )
+    assert activate_resp.status_code == 200, activate_resp.text
+
+    reviews_after_reactivate = test_client.get(
+        f"/roles/client/review/{coach_id}",
+        headers=client_auth_header,
+    )
+    assert reviews_after_reactivate.status_code == 200
+    assert len(reviews_after_reactivate.json()["reviews"]) == 1
+
+    coach_account = db_session.exec(
+        select(Account).where(Account.coach_id == coach_id)
+    ).first()
+    assert coach_account is not None
+    assert coach_account.is_active is True

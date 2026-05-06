@@ -427,8 +427,7 @@ def deactivate_account(
 
     notify_affected_accounts(db, account, affected_accounts)
 
-    # Optional: keep this if your feature is supposed to remove relationships
-    # delete_client_coach_mappings(db, account)
+    delete_client_coach_mappings(db, account)
 
     db.commit()
     db.refresh(account)
