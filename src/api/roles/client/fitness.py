@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, time, timedelta, timezone
 from typing import Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import field_validator, model_validator
@@ -28,6 +28,25 @@ from src.database.telemetry.models import (
 )
 
 router = APIRouter(prefix="/roles/client/fitness", tags=["client", "fitness"])
+
+TELEMETRY_MOOD = "mood"
+TELEMETRY_BODY_METRICS_SURVEY = "body_metrics_survey"
+TELEMETRY_WEIGHT = "weight"
+TELEMETRY_PROGRESS_PICTURE = "progress_picture"
+TELEMETRY_STEPS = "steps"
+TELEMETRY_STEPS_SURVEY = "steps_survey"
+TELEMETRY_WORKOUT = "workout"
+TELEMETRY_WORKOUT_SURVEY = "workout_survey"
+TELEMETRY_MEAL = "meal"
+TELEMETRY_MEAL_SURVEY = "meal_survey"
+
+SURVEY_TELEMETRY_TYPES = {
+    DailyMoodSurvey: TELEMETRY_MOOD,
+    DailyBodyMetricsSurvey: TELEMETRY_BODY_METRICS_SURVEY,
+    DailyStepsSurvey: TELEMETRY_STEPS_SURVEY,
+    DailyWorkoutSurvey: TELEMETRY_WORKOUT_SURVEY,
+    DailyMealSurvey: TELEMETRY_MEAL_SURVEY,
+}
 
 class DailySurveySubmitPayload(SQLModel):
     happiness_meter: int
@@ -185,51 +204,96 @@ def _validate_client_prescribed_meal_belongs_to_client(db: Session, client_id: i
 
     return prescribed_meal
 
-def _get_or_create_telemetry(db: Session, client_id: int) -> ClientTelemetry:
-    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _today_bounds_utc() -> tuple[datetime, datetime]:
+    today = _now_utc().date()
+    start = datetime.combine(today, time.min, tzinfo=timezone.utc)
+    return start, start + timedelta(days=1)
+
+
+def create_telemetry_event(
+    db: Session,
+    client_id: int,
+    telemetry_type: str,
+    *,
+    commit: bool = True,
+) -> ClientTelemetry:
+    telemetry = ClientTelemetry(
+        client_id=client_id,
+        telemetry_type=telemetry_type,
+        date=_now_utc(),
+    )
+    db.add(telemetry)
+    if commit:
+        db.commit()
+        db.refresh(telemetry)
+    else:
+        db.flush()
+    return telemetry
+
+
+def _get_today_telemetry_for_type(
+    db: Session,
+    client_id: int,
+    telemetry_type: str,
+) -> ClientTelemetry | None:
+    start, end = _today_bounds_utc()
     telemetry = db.exec(
         select(ClientTelemetry).where(
             ClientTelemetry.client_id == client_id,
-            ClientTelemetry.date == today
+            ClientTelemetry.telemetry_type == telemetry_type,
+            ClientTelemetry.date >= start,
+            ClientTelemetry.date < end,
         )
+        .order_by(ClientTelemetry.id.desc())
     ).first()
+    return telemetry
 
-    if telemetry is not None:
+
+def _get_or_create_daily_telemetry_for_type(
+    db: Session,
+    client_id: int,
+    telemetry_type: str,
+) -> ClientTelemetry:
+    telemetry = _get_today_telemetry_for_type(db, client_id, telemetry_type)
+    if telemetry:
         return telemetry
 
-    telemetry = ClientTelemetry(client_id=client_id, date=today)
-    db.add(telemetry)
+    return create_telemetry_event(db, client_id, telemetry_type)
 
-    try:
-        db.commit()
-        db.refresh(telemetry)
-        return telemetry
-    except IntegrityError:
-        db.rollback()
-        telemetry = db.exec(
-            select(ClientTelemetry).where(
-                ClientTelemetry.client_id == client_id,
-                ClientTelemetry.date == today
-            )
-        ).first()
 
-        if telemetry is None:
-            raise
+def _get_or_create_telemetry(db: Session, client_id: int) -> ClientTelemetry:
+    """Backward-compatible generic telemetry event creator.
 
-        return telemetry
+    New code should pass a specific telemetry type through create_telemetry_event
+    or _get_or_create_daily_telemetry_for_type.
+    """
+    return create_telemetry_event(db, client_id, "general")
 
 
 def _get_or_create_daily_survey(db: Session, client_id: int, survey_model):
-    telemetry = _get_or_create_telemetry(db, client_id)
+    telemetry_type = SURVEY_TELEMETRY_TYPES[survey_model]
+    start, end = _today_bounds_utc()
     survey = db.exec(
-        select(survey_model).where(
-            survey_model.client_telemetry_id == telemetry.id
+        select(survey_model)
+        .join(ClientTelemetry, survey_model.client_telemetry_id == ClientTelemetry.id)
+        .where(
+            ClientTelemetry.client_id == client_id,
+            ClientTelemetry.date >= start,
+            ClientTelemetry.date < end,
+            ClientTelemetry.telemetry_type == telemetry_type,
         )
+        .order_by(survey_model.id.desc())
     ).first()
 
     if survey is not None:
+        telemetry = db.get(ClientTelemetry, survey.client_telemetry_id)
         return telemetry, survey
 
+    telemetry = create_telemetry_event(db, client_id, telemetry_type)
     survey = survey_model(
         is_seen=True,
         is_started=False,
@@ -245,14 +309,21 @@ def _get_or_create_daily_survey(db: Session, client_id: int, survey_model):
     except IntegrityError:
         db.rollback()
         survey = db.exec(
-            select(survey_model).where(
-                survey_model.client_telemetry_id == telemetry.id
+            select(survey_model)
+            .join(ClientTelemetry, survey_model.client_telemetry_id == ClientTelemetry.id)
+            .where(
+                ClientTelemetry.client_id == client_id,
+                ClientTelemetry.date >= start,
+                ClientTelemetry.date < end,
+                ClientTelemetry.telemetry_type == telemetry_type,
             )
+            .order_by(survey_model.id.desc())
         ).first()
 
         if survey is None:
             raise
 
+        telemetry = db.get(ClientTelemetry, survey.client_telemetry_id)
         return telemetry, survey
 
 
@@ -310,9 +381,6 @@ def start_daily_survey(
     
     telemetry, survey = get_or_create_daily_survey(db, acc.client_id)
 
-    if survey.is_finished:
-        raise HTTPException(status_code=400, detail="Survey has already been submitted")
-
     if not survey.is_started:
         survey.is_started = True
         survey.is_seen = True
@@ -342,16 +410,16 @@ def submit_daily_survey(
 
     if not survey.is_started:
         raise HTTPException(status_code=400, detail="Survey has not been started yet")
-    if survey.is_finished:
-        raise HTTPException(status_code=400, detail="Survey has already been submitted")
 
-    completed_survey = CompletedSurvey(
-        happiness_meter=payload.happiness_meter,
-        alertness=payload.alertness,
-        healthiness=payload.healthiness,
-        todays_goals=payload.todays_goals,
-        todays_appreciation=payload.todays_appreciation
-    )
+    completed_survey = db.get(CompletedSurvey, survey.completed_survey_id) if survey.completed_survey_id else None
+    if completed_survey is None:
+        completed_survey = CompletedSurvey()
+
+    completed_survey.happiness_meter = payload.happiness_meter
+    completed_survey.alertness = payload.alertness
+    completed_survey.healthiness = payload.healthiness
+    completed_survey.todays_goals = payload.todays_goals
+    completed_survey.todays_appreciation = payload.todays_appreciation
     db.add(completed_survey)
     db.flush()
 
@@ -393,9 +461,6 @@ def start_daily_workout_survey(
         raise HTTPException(status_code=404, detail="Client profile not found")
 
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyWorkoutSurvey)
-    if survey.is_finished:
-        raise HTTPException(status_code=400, detail="Survey has already been submitted")
-    
     if not survey.is_started:
         survey.is_started = True
         survey.is_seen = True
@@ -426,8 +491,6 @@ def submit_daily_workout_survey(
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyWorkoutSurvey)
     if not survey.is_started:
         raise HTTPException(status_code=400, detail="Survey has not been started yet")
-    if survey.is_finished:
-        raise HTTPException(status_code=400, detail="Survey has already been submitted")
 
     completed_workout_details = CompletedWorkoutActivity(
         completed_reps=payload.completed_reps,
@@ -438,11 +501,12 @@ def submit_daily_workout_survey(
     db.add(completed_workout_details)
     db.flush()
 
+    workout_telemetry = create_telemetry_event(db, acc.client_id, TELEMETRY_WORKOUT, commit=False)
     completed_workout = CompletedWorkout(
         workout_plan_activity_id=payload.workout_plan_activity_id,
         workout_activity_id=payload.workout_activity_id,
         completed_workout_details_id=completed_workout_details.id,
-        client_telemetry_id=telemetry.id,
+        client_telemetry_id=workout_telemetry.id,
     )
     db.add(completed_workout)
     db.flush()
@@ -481,9 +545,6 @@ def start_daily_body_metrics_survey(
 
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyBodyMetricsSurvey)
 
-    if survey.is_finished:
-        raise HTTPException(status_code=400, detail="Survey has already been submitted")
-    
     if not survey.is_started:
         survey.is_started = True
         survey.is_seen = True
@@ -505,26 +566,41 @@ def submit_daily_body_metrics_survey(
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyBodyMetricsSurvey)
     if not survey.is_started:
         raise HTTPException(status_code=400, detail="Survey has not been started yet")
-    if survey.is_finished:
-        raise HTTPException(status_code=400, detail="Survey has already been submitted")
 
-    health_metrics = HealthMetrics(
-        weight=payload.weight,
-        progress_pic_url=payload.progress_pic_url,
-        client_telemetry_id=telemetry.id,
+    metrics_telemetry = _get_or_create_daily_telemetry_for_type(
+        db,
+        acc.client_id,
+        TELEMETRY_WEIGHT,
     )
+
+    health_metrics = db.get(HealthMetrics, survey.completed_health_metrics_id) if survey.completed_health_metrics_id else None
+    if health_metrics is None:
+        health_metrics = db.exec(
+            select(HealthMetrics).where(HealthMetrics.client_telemetry_id == metrics_telemetry.id)
+        ).first()
+
+    if health_metrics is None:
+        health_metrics = HealthMetrics(weight=payload.weight, client_telemetry_id=metrics_telemetry.id)
+    else:
+        health_metrics.weight = payload.weight
+
     db.add(health_metrics)
     db.flush()
 
     if payload.progress_pic_url:
+        picture_telemetry = _get_or_create_daily_telemetry_for_type(
+            db,
+            acc.client_id,
+            TELEMETRY_PROGRESS_PICTURE,
+        )
         progress_picture = db.exec(
             select(DailyProgressPicture).where(
-                DailyProgressPicture.client_telemetry_id == telemetry.id
+                DailyProgressPicture.client_telemetry_id == picture_telemetry.id
             )
         ).first()
         if progress_picture is None:
             progress_picture = DailyProgressPicture(
-                client_telemetry_id=telemetry.id,
+                client_telemetry_id=picture_telemetry.id,
                 url=payload.progress_pic_url,
             )
         else:
@@ -563,9 +639,6 @@ def start_daily_steps_survey(
 
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyStepsSurvey)
 
-    if survey.is_finished:
-        raise HTTPException(status_code=400, detail="Survey has already been submitted")
-    
     if not survey.is_started:
         survey.is_started = True
         survey.is_seen = True
@@ -588,13 +661,23 @@ def submit_daily_steps_survey(
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyStepsSurvey)
     if not survey.is_started:
         raise HTTPException(status_code=400, detail="Survey has not been started yet")
-    if survey.is_finished:
-        raise HTTPException(status_code=400, detail="Survey has already been submitted")
 
-    step_count = StepCount(
-        step_count=payload.step_count,
-        client_telemetry_id=telemetry.id,
+    step_telemetry = _get_or_create_daily_telemetry_for_type(
+        db,
+        acc.client_id,
+        TELEMETRY_STEPS,
     )
+
+    step_count = db.get(StepCount, survey.step_count_id) if survey.step_count_id else None
+    if step_count is None:
+        step_count = db.exec(
+            select(StepCount).where(StepCount.client_telemetry_id == step_telemetry.id)
+        ).first()
+
+    if step_count is None:
+        step_count = StepCount(step_count=payload.step_count, client_telemetry_id=step_telemetry.id)
+    else:
+        step_count.step_count = payload.step_count
     db.add(step_count)
     db.flush()
 
@@ -630,9 +713,6 @@ def start_daily_meal_survey(
 
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyMealSurvey)
     
-    if survey.is_finished:
-        raise HTTPException(status_code=400, detail="Survey has already been submitted")
-    
     if not survey.is_started:
         survey.is_started = True
         survey.is_seen = True
@@ -663,14 +743,26 @@ def submit_daily_meal_survey(
     telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyMealSurvey)
     if not survey.is_started:
         raise HTTPException(status_code=400, detail="Survey has not been started yet")
-    if survey.is_finished:
-        raise HTTPException(status_code=400, detail="Survey has already been submitted")
 
-    completed_meal = CompletedMealActivity(
-        client_prescribed_meal_id=payload.client_prescribed_meal_id,
-        on_demand_meal_id=payload.on_demand_meal_id,
-        client_telemetry_id=telemetry.id,
+    meal_telemetry = _get_or_create_daily_telemetry_for_type(
+        db,
+        acc.client_id,
+        TELEMETRY_MEAL,
     )
+
+    completed_meal = db.get(CompletedMealActivity, survey.completed_meal_activity_id) if survey.completed_meal_activity_id else None
+    if completed_meal is None:
+        completed_meal = db.exec(
+            select(CompletedMealActivity).where(
+                CompletedMealActivity.client_telemetry_id == meal_telemetry.id
+            )
+        ).first()
+
+    if completed_meal is None:
+        completed_meal = CompletedMealActivity(client_telemetry_id=meal_telemetry.id)
+
+    completed_meal.client_prescribed_meal_id = payload.client_prescribed_meal_id
+    completed_meal.on_demand_meal_id = payload.on_demand_meal_id
     db.add(completed_meal)
     db.flush()
 

@@ -1,5 +1,3 @@
-from datetime import date
-
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, Query
 from typing import Optional, List
 from sqlmodel import Session, select
@@ -40,7 +38,12 @@ from src.database.account.models import Account, Availability, Notification
 from src.database.client.models import Client, ClientAvailability, FitnessGoals, ClientWorkoutPlan
 from src.database.workouts_and_activities.models import WorkoutPlan
 from src.database.telemetry.models import HealthMetrics, ClientTelemetry, DailyProgressPicture
-from src.api.roles.client.fitness import _get_or_create_telemetry
+from src.api.roles.client.fitness import (
+    TELEMETRY_PROGRESS_PICTURE,
+    TELEMETRY_WEIGHT,
+    create_telemetry_event,
+    _get_or_create_daily_telemetry_for_type,
+)
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan
 
@@ -82,8 +85,7 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
     if client.id is None:
         raise HTTPException(500, detail="Something went wrong when adding new client")
 
-    telem = ClientTelemetry(client_id=client.id, date=date.today())
-    db.add(telem)
+    telem = create_telemetry_event(db, client.id, TELEMETRY_WEIGHT, commit=False)
     
     client_details.fitness_goals.client_id = client.id  # type: ignore
     db.add(client_details.fitness_goals)
@@ -144,11 +146,18 @@ def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_s
         db.flush()
         client.payment_information_id = payload.payment_information.id
 
-    # Health metrics: append a new telemetry record and attach the metrics
+    # Health metrics: one editable body metric row per local day.
     if payload.health_metrics:
-        telem = ClientTelemetry(client_id=client.id, date=date.today())
-        db.add(telem)
-        db.flush()
+        telem = _get_or_create_daily_telemetry_for_type(db, client.id, TELEMETRY_WEIGHT)
+        existing_metrics = db.exec(
+            select(HealthMetrics).where(HealthMetrics.client_telemetry_id == telem.id)
+        ).first()
+        if existing_metrics is not None:
+            existing_metrics.weight = payload.health_metrics.weight
+            db.add(existing_metrics)
+            db.commit()
+            return DunderResponse()
+
         payload.health_metrics.client_telemetry_id = telem.id
         db.add(payload.health_metrics)
 
@@ -356,7 +365,14 @@ def upload_progress_picture(
     """
     public_url = upload_public_file_to_supabase(file, "progress_picture", str(acc.id))
 
-    telemetry = _get_or_create_telemetry(db, acc.client_id)
+    if acc.client_id is None:
+        raise HTTPException(status_code=404, detail="Client profile not found")
+
+    telemetry = _get_or_create_daily_telemetry_for_type(
+        db,
+        acc.client_id,
+        TELEMETRY_PROGRESS_PICTURE,
+    )
 
     pic = db.exec(
         select(DailyProgressPicture).where(
@@ -369,15 +385,6 @@ def upload_progress_picture(
         db.add(pic)
     else:
         pic.url = public_url
-
-    health_metrics = db.exec(
-        select(HealthMetrics).where(
-            HealthMetrics.client_telemetry_id == telemetry.id
-        )
-    ).first()
-    if health_metrics is not None:
-        health_metrics.progress_pic_url = public_url
-        db.add(health_metrics)
 
     db.commit()
     db.refresh(pic)
@@ -398,9 +405,8 @@ def get_progress_pictures(
 ):
     """Return all progress pictures for the current client, newest first."""
     rows = db.exec(
-        select(DailyProgressPicture, ClientTelemetry, HealthMetrics)
+        select(DailyProgressPicture, ClientTelemetry)
         .join(ClientTelemetry, DailyProgressPicture.client_telemetry_id == ClientTelemetry.id)
-        .outerjoin(HealthMetrics, HealthMetrics.client_telemetry_id == ClientTelemetry.id)
         .where(ClientTelemetry.client_id == acc.client_id)
         .order_by(DailyProgressPicture.id.desc())
         .offset(pagination.skip)
@@ -408,14 +414,11 @@ def get_progress_pictures(
     ).all()
 
     pictures = []
-    for pic, telem, metrics in rows:
-        url = pic.url or (metrics.progress_pic_url if metrics else None)
-        if not url:
-            continue
+    for pic, telem in rows:
         pictures.append({
             "id": pic.id,
             "client_telemetry_id": telem.id,
-            "url": url,
+            "url": pic.url,
             "date": str(telem.date),
         })
 

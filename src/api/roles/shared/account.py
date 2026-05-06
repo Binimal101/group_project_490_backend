@@ -125,20 +125,16 @@ def get_full_profile(
             # Progress pictures from DailyProgressPicture (one per day, upserted)
             progress_pics_out = []
             pics = db.exec(
-                select(DailyProgressPicture, ClientTelemetry, HealthMetrics)
+                select(DailyProgressPicture, ClientTelemetry)
                 .join(ClientTelemetry, DailyProgressPicture.client_telemetry_id == ClientTelemetry.id)
-                .outerjoin(HealthMetrics, HealthMetrics.client_telemetry_id == ClientTelemetry.id)
                 .where(ClientTelemetry.client_id == client.id)
                 .order_by(desc(DailyProgressPicture.id))
             ).all()
-            for dpp, ct, hm in pics:
-                progress_pic_url = dpp.url or (hm.progress_pic_url if hm else None)
-                if not progress_pic_url:
-                    continue
+            for dpp, ct in pics:
                 progress_pics_out.append({
                     "id": dpp.id,
                     "client_telemetry_id": ct.id,
-                    "url": progress_pic_url,
+                    "url": dpp.url,
                     "date": str(ct.date) if ct.date else None,
                 })
 
