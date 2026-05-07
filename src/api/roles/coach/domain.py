@@ -147,14 +147,31 @@ class WorkoutPlanInput(BaseModel):
     strata_name: str
     workout_activities: Optional[List[WorkoutPlanActivity]] = Field(default=None)
 
-class PrescribeWorkoutPlanInput(BaseModel):
-    workout_plan_id: int
-    client_id: int
+class CoachScheduleBlock(BaseModel):
     start_dt: datetime
     end_dt: datetime
 
+    @model_validator(mode="after")
+    def _ordered(self):
+        if self.start_dt >= self.end_dt:
+            raise HTTPException(400, detail="start_dt must be strictly before end_dt")
+        return self
+
+
+class PrescribeWorkoutPlanInput(BaseModel):
+    workout_plan_id: int
+    client_id: int
+    blocks: List[CoachScheduleBlock]
+
+    @model_validator(mode="after")
+    def _has_blocks(self):
+        if not self.blocks:
+            raise HTTPException(400, detail="At least one schedule block is required")
+        return self
+
+
 class PrescribeWorkoutPlanResponse(BaseModel):
-    client_workout_plan_id: int
+    client_workout_plan_ids: List[int]
 
 #Responses
 class DunderResponse(BaseModel):

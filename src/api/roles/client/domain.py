@@ -102,10 +102,26 @@ class UpdateClientInfoInput(BaseModel):
         
         return self #return the "safe" validated model, which is just itself (no need to cast / do anything else)
 
-class AssignWorkoutPlanInput(BaseModel):
-    workout_plan_id: int
+class ScheduleBlock(BaseModel):
     start_dt: datetime
     end_dt: datetime
+
+    @model_validator(mode="after")
+    def _ordered(self):
+        if self.start_dt >= self.end_dt:
+            raise HTTPException(400, detail="start_dt must be strictly before end_dt")
+        return self
+
+
+class AssignWorkoutPlanInput(BaseModel):
+    workout_plan_id: int
+    blocks: List[ScheduleBlock]
+
+    @model_validator(mode="after")
+    def _has_blocks(self):
+        if not self.blocks:
+            raise HTTPException(400, detail="At least one schedule block is required")
+        return self
 
 #Responses
 class MyCoachResponse(BaseModel):
@@ -137,7 +153,7 @@ class ClientCoachRequestResponse(BaseModel):
     request_id: int
 
 class AssignWorkoutPlanResponse(BaseModel):
-    client_workout_plan_id: int
+    client_workout_plan_ids: List[int]
 
 class CreateClientResponse(BaseModel):
     client_id: int

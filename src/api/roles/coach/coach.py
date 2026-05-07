@@ -51,8 +51,9 @@ from src.database.client.models import Client, FitnessGoals, ClientWorkoutPlan
 from src.database.role_management.models import CoachRequest
 from src.database.reports.models import ClientReport
 from src.api.roles.services import (
-    collect_availability_rows_for_range,
-    set_availability_blocked,
+    validate_blocks_against_availability,
+    block_availability_range,
+    unblock_availability_range,
 )
 
 from sqlmodel import func
@@ -203,88 +204,11 @@ def me(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
         last_recorded_height=height,
     )
 
-@router.post("/create_workout", response_model=DunderResponse)
-def create_workout(workout_details: WorkoutInput, db = Depends(get_session), acc: Account = Depends(get_coach_account)):
-    """
-    Creates a workout and attaches equiptment if provided
-    Errors when user does not have a coach_id
-    """
-    if acc.coach_id is None:
-        raise HTTPException(404, detail="No coach profile found for this account")
-    
-    workout = Workout(
-        name=workout_details.name,
-        description=workout_details.description,
-        instructions=workout_details.instructions,
-        workout_type=workout_details.workout_type
-    )
-
-    db.add(workout)
-    db.flush()
-
-    if workout_details.equipment is not None:
-        for e in workout_details.equipment:
-            db.add(e)
-            db.flush()
-            db.add(WorkoutEquiptment(workout_id=workout.id, equiptment_id=e.id)) # type: ignore
-
-    db.commit()
-
-    return DunderResponse()
-
-
-@router.post("/create_workout_activity", response_model=DunderResponse)
-def create_workout_activity(activity_details: WorkoutActivityInput, db = Depends(get_session), acc: Account = Depends(get_coach_account)):
-    """
-    Creates a workout activity and attaches it to a workout
-    Errors when user does not have a coach_id
-    """
-    if acc.coach_id is None:
-        raise HTTPException(404, detail="No coach profile found for this account")
-
-    activity = WorkoutActivity(
-        workout_id=activity_details.workout_id,
-        intensity_measure=activity_details.intensity_measure,
-        intensity_value=activity_details.intensity_value,
-        estimated_calories_per_unit_frequency=activity_details.estimated_calories_per_unit_frequency
-    )
-
-    db.add(activity)
-    db.flush()
-    db.commit()
-
-    return DunderResponse()
-
-@router.post("/create_workout_plan", response_model=DunderResponse)
-def create_workout_plan(plan_details: WorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_coach_account)):
-    """
-    Creates a workout plan and attaches workout activities if provided
-    Errors when user does not have a coach_id
-    """
-    if acc.coach_id is None:
-        raise HTTPException(404, detail="No coach profile found for this account")
-
-    plan = WorkoutPlan(
-        strata_name=plan_details.strata_name
-    )
-
-    db.add(plan)
-    db.flush()
-
-    if plan_details.workout_activities is not None:
-        for activity in plan_details.workout_activities:
-            db.add(activity)
-            db.flush()
-            db.add(WorkoutPlanActivity(workout_plan_id=plan.id, workout_activity_id=activity.id)) # type: ignore
-
-    db.commit()
-
-    return DunderResponse()
-
 @router.post("/prescribe_plan", response_model=PrescribeWorkoutPlanResponse)
 def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_coach_account)):
     """
-    Assigns a workout plan to one of the coach's active clients.
+    Coach prescribes a workout plan to one of their active clients across one or more time blocks.
+    Each block becomes its own ClientWorkoutPlan row. Validates against the client's availability template.
     """
     if acc.coach_id is None:
         raise HTTPException(404, detail="No coach profile found for this account")
@@ -314,31 +238,22 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
     if relationship is None:
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
 
-    matched_rows, uncovered = collect_availability_rows_for_range(
-        db, payload.client_id, payload.start_dt, payload.end_dt
-    )
-    if uncovered:
-        raise HTTPException(
-            409,
-            detail="Requested time range is not within the client's declared availability."
+    block_pairs = [(b.start_dt, b.end_dt) for b in payload.blocks]
+    created_ids = []
+    for start_dt, end_dt in block_pairs:
+        validate_blocks_against_availability(db, payload.client_id, [(start_dt, end_dt)])
+        cwp = ClientWorkoutPlan(
+            client_id=payload.client_id,
+            workout_plan_id=payload.workout_plan_id,
+            start_time=start_dt,
+            end_time=end_dt,
         )
-    if any(r.is_blocked for r in matched_rows):
-        raise HTTPException(
-            409,
-            detail="Requested time range overlaps a slot already booked for this client."
-        )
-
-    client_workout_plan = ClientWorkoutPlan(
-        client_id=payload.client_id,
-        workout_plan_id=payload.workout_plan_id,
-        start_time=payload.start_dt,
-        end_time=payload.end_dt
-    )
-    db.add(client_workout_plan)
-    set_availability_blocked(
-        db, payload.client_id, payload.start_dt, payload.end_dt, blocked=True
-    )
-    db.flush()
+        db.add(cwp)
+        block_availability_range(db, payload.client_id, start_dt, end_dt)
+        db.flush()
+        if cwp.id is None:
+            raise HTTPException(500, detail="Something went wrong while prescribing the workout plan")
+        created_ids.append(cwp.id)
 
     client_account = db.exec(select(Account).where(Account.client_id == payload.client_id)).first()
     if client_account and client_account.id is not None:
@@ -346,16 +261,11 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
             account_id=client_account.id,
             fav_category="workout_plan",
             message=f"{acc.name} prescribed a new workout plan.",
-            details=f"Workout plan {payload.workout_plan_id} is scheduled from {payload.start_dt.isoformat()} to {payload.end_dt.isoformat()}.",
+            details=f"Workout plan {payload.workout_plan_id} scheduled across {len(block_pairs)} block(s).",
         ))
 
     db.commit()
-    db.refresh(client_workout_plan)
-
-    if client_workout_plan.id is None:
-        raise HTTPException(500, detail="Something went wrong while prescribing the workout plan")
-
-    return PrescribeWorkoutPlanResponse(client_workout_plan_id=client_workout_plan.id)
+    return PrescribeWorkoutPlanResponse(client_workout_plan_ids=created_ids)
 
 
 def _require_active_relationship(db, coach_id: int, client_id: int):
@@ -434,7 +344,7 @@ def delete_prescribed_plan(plan_id: int, db = Depends(get_session), acc: Account
     if relationship is None:
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
 
-    set_availability_blocked(db, cwp.client_id, cwp.start_time, cwp.end_time, blocked=False)
+    unblock_availability_range(db, cwp.client_id, cwp.start_time, cwp.end_time)
     db.delete(cwp)
     db.commit()
     return {"details": "deleted"}

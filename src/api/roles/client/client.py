@@ -49,8 +49,9 @@ from src.api.roles.client.fitness import (
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan
 from src.api.roles.services import (
-    collect_availability_rows_for_range,
-    set_availability_blocked,
+    validate_blocks_against_availability,
+    block_availability_range,
+    unblock_availability_range,
 )
 
 
@@ -197,7 +198,10 @@ def me(db = Depends(get_session), acc: Account = Depends(get_client_account)):
 @router.post("/assign_plan", response_model=AssignWorkoutPlanResponse)
 def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
-    Assigns a workout plan to the authenticated client.
+    Assigns a workout plan to the authenticated client across one or more time blocks.
+    Each block becomes its own ClientWorkoutPlan row sharing the same workout_plan_id.
+    Validates every block against the client's recurring availability template,
+    then carves the booked time out (split/merge of Availability rows).
     """
     if acc.client_id is None:
         raise HTTPException(404, detail="Client profile not found")
@@ -206,37 +210,27 @@ def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_sessio
     if plan is None:
         raise HTTPException(404, detail="Workout plan not found")
 
-    matched_rows, uncovered = collect_availability_rows_for_range(
-        db, acc.client_id, payload.start_dt, payload.end_dt
-    )
-    if uncovered:
-        raise HTTPException(
-            409,
-            detail="Requested time range is not within your declared availability."
+    block_pairs = [(b.start_dt, b.end_dt) for b in payload.blocks]
+    created_ids = []
+    for start_dt, end_dt in block_pairs:
+        # Re-validate per block against the current (post-prior-carves) state so that
+        # two blocks asking for the same time slot don't both succeed.
+        validate_blocks_against_availability(db, acc.client_id, [(start_dt, end_dt)])
+        cwp = ClientWorkoutPlan(
+            client_id=acc.client_id,
+            workout_plan_id=payload.workout_plan_id,
+            start_time=start_dt,
+            end_time=end_dt,
         )
-    if any(r.is_blocked for r in matched_rows):
-        raise HTTPException(
-            409,
-            detail="Requested time range overlaps a slot already booked by another plan."
-        )
+        db.add(cwp)
+        block_availability_range(db, acc.client_id, start_dt, end_dt)
+        db.flush()
+        if cwp.id is None:
+            raise HTTPException(500, detail="Something went wrong while assigning the workout plan")
+        created_ids.append(cwp.id)
 
-    client_workout_plan = ClientWorkoutPlan(
-        client_id=acc.client_id,
-        workout_plan_id=payload.workout_plan_id,
-        start_time=payload.start_dt,
-        end_time=payload.end_dt
-    )
-    db.add(client_workout_plan)
-    set_availability_blocked(
-        db, acc.client_id, payload.start_dt, payload.end_dt, blocked=True
-    )
     db.commit()
-    db.refresh(client_workout_plan)
-
-    if client_workout_plan.id is None:
-        raise HTTPException(500, detail="Something went wrong while assigning the workout plan")
-
-    return AssignWorkoutPlanResponse(client_workout_plan_id=client_workout_plan.id)
+    return AssignWorkoutPlanResponse(client_workout_plan_ids=created_ids)
 
 
 
