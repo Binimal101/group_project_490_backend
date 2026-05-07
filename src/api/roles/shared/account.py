@@ -9,10 +9,12 @@ from src.database.payment.models import PricingPlan, PaymentInformation, Subscri
 from src.database.telemetry.models import HealthMetrics, ClientTelemetry, DailyProgressPicture
 from src.database.coach_client_relationship.models import ClientCoachRelationship, ClientCoachRequest
 from src.database.reports.models import CoachReviews
+from src.database.role_management.models import RolePromotionResolution, CoachRequest
 from src.api.dependencies import get_account_from_bearer, get_active_account, get_account_even_if_inactive
 from src.api.storage import upload_public_file_to_supabase
 from src.api.roles.shared.domain import FullProfileResponse, AccountResponse, UpdateAccountInput
 from sqlmodel import Session, select, desc, func
+from sqlalchemy import or_
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
@@ -407,6 +409,52 @@ def delete_client_coach_mappings(db: Session, account: Account):
             db.delete(request)
 
 
+def delete_role_promotion_records(db: Session, account: Account):
+    """
+    Remove role-promotion records that reference the account being deleted.
+    CoachRequest rows point at RolePromotionResolution, so clear those links before
+    deleting the resolution rows.
+    """
+    if account.coach_id is not None:
+        coach_requests = db.exec(
+            select(CoachRequest).where(CoachRequest.coach_id == account.coach_id)
+        ).all()
+
+        for coach_request in coach_requests:
+            db.delete(coach_request)
+
+    if account.admin_id is not None:
+        resolution_query = select(RolePromotionResolution).where(
+            or_(
+                RolePromotionResolution.account_id == account.id,
+                RolePromotionResolution.admin_id == account.admin_id,
+            )
+        )
+    else:
+        resolution_query = select(RolePromotionResolution).where(
+            RolePromotionResolution.account_id == account.id
+        )
+
+    resolutions = db.exec(resolution_query).all()
+    resolution_ids = [
+        resolution.id for resolution in resolutions if resolution.id is not None
+    ]
+
+    if resolution_ids:
+        linked_requests = db.exec(
+            select(CoachRequest).where(
+                CoachRequest.role_promotion_resolution_id.in_(resolution_ids)
+            )
+        ).all()
+
+        for linked_request in linked_requests:
+            linked_request.role_promotion_resolution_id = None
+            db.add(linked_request)
+
+    for resolution in resolutions:
+        db.delete(resolution)
+
+
 class DeleteAccountResponse(BaseModel):
     success: bool
     message: str
@@ -481,6 +529,9 @@ def delete_account(
     account = db.get(Account, acc.id)
     if account is None:
         raise HTTPException(404, detail="Account not found")
+
+    delete_client_coach_mappings(db, account)
+    delete_role_promotion_records(db, account)
 
     if account.client_id is not None:
         client = db.get(Client, account.client_id)

@@ -3,6 +3,8 @@ from sqlmodel import select
 from src.database.account.models import Account
 from src.database.client.models import Client
 from src.database.coach.models import Coach
+from src.database.role_management.models import CoachRequest, RolePromotionResolution
+from tests.payload_tools.coach import build_coach_request_payload
 
 
 def test_delete_base_account(test_client, auth_header, db_session):
@@ -50,3 +52,42 @@ def test_delete_coach_account_removes_coach_role(test_client, coach_auth_header,
     assert db_session.get(Account, account_id) is None
     assert db_session.get(Coach, coach_id) is None
     assert db_session.exec(select(Account).where(Account.coach_id == coach_id)).first() is None
+
+
+def test_delete_coach_account_removes_role_promotion_resolution(
+    test_client,
+    create_client,
+    admin_auth_header,
+    db_session,
+):
+    coach_header, _ = create_client(email_prefix="delete-approved-coach")
+
+    coach_request_resp = test_client.post(
+        "/roles/coach/request_coach_creation",
+        json=build_coach_request_payload(),
+        headers=coach_header,
+    )
+    assert coach_request_resp.status_code == 200, coach_request_resp.text
+    coach_request_id = coach_request_resp.json()["coach_request_id"]
+
+    resolve_resp = test_client.post(
+        "/roles/admin/resolve_coach_request",
+        json={"coach_request_id": coach_request_id, "is_approved": True},
+        headers=admin_auth_header,
+    )
+    assert resolve_resp.status_code == 200, resolve_resp.text
+
+    coach_request = db_session.get(CoachRequest, coach_request_id)
+    assert coach_request is not None
+    resolution_id = coach_request.role_promotion_resolution_id
+    assert resolution_id is not None
+
+    delete_resp = test_client.delete(
+        "/roles/shared/account/delete",
+        headers=coach_header,
+    )
+    assert delete_resp.status_code == 200, delete_resp.text
+
+    db_session.expire_all()
+    assert db_session.get(CoachRequest, coach_request_id) is None
+    assert db_session.get(RolePromotionResolution, resolution_id) is None
