@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, UploadFile, HTTPException
 
 from src.database.admin.models import Admin
 from src.database.session import get_session
-from src.database.account.models import Account, Availability
+from src.database.account.models import Account, Availability, Notification
 from src.database.client.models import Client, FitnessGoals
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.payment.models import PricingPlan, PaymentInformation, Subscription, BillingCycle, Invoice
@@ -21,6 +21,15 @@ from src.api.dependencies import get_active_account, get_account_even_if_inactiv
 from src.api.storage import upload_public_file_to_supabase
 from src.api.roles.shared.domain import FullProfileResponse, AccountResponse, UpdateAccountInput
 from sqlmodel import Session, select, desc, func, delete, or_
+from src.database.telemetry.models import HealthMetrics, ClientTelemetry, DailyProgressPicture
+from src.database.coach_client_relationship.models import ClientCoachRelationship, ClientCoachRequest
+from src.database.reports.models import CoachReviews
+from src.database.role_management.models import RolePromotionResolution, CoachRequest
+from src.api.dependencies import get_account_from_bearer, get_active_account, get_account_even_if_inactive
+from src.api.storage import upload_public_file_to_supabase
+from src.api.roles.shared.domain import FullProfileResponse, AccountResponse, UpdateAccountInput
+from sqlmodel import Session, select, desc, func
+from sqlalchemy import or_
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
@@ -292,6 +301,172 @@ class ActivateAccountResponse(BaseModel):
     message: str
 
 
+def get_affected_accounts(db: Session, account: Account) -> list[Account]:
+    """
+    Finds active client-coach relationship accounts affected by account deactivation.
+    """
+    affected_accounts_by_id: dict[int, Account] = {}
+
+    def add_affected_account(affected_account: Account | None):
+        if affected_account is None:
+            return
+        if affected_account.id is None or affected_account.id == account.id:
+            return
+        affected_accounts_by_id[affected_account.id] = affected_account
+
+    # If the deactivated account is a client, notify their active coach(es)
+    if account.client_id is not None:
+        coach_accounts = db.exec(
+            select(Account)
+            .join(ClientCoachRequest, ClientCoachRequest.coach_id == Account.coach_id)
+            .join(
+                ClientCoachRelationship,
+                ClientCoachRelationship.request_id == ClientCoachRequest.id,
+            )
+            .where(
+                ClientCoachRequest.client_id == account.client_id,
+                ClientCoachRelationship.is_active == True,
+            )
+        ).all()
+
+        for coach_account in coach_accounts:
+            add_affected_account(coach_account)
+
+    # If the deactivated account is a coach, notify their active client(s)
+    if account.coach_id is not None:
+        client_accounts = db.exec(
+            select(Account)
+            .join(ClientCoachRequest, ClientCoachRequest.client_id == Account.client_id)
+            .join(
+                ClientCoachRelationship,
+                ClientCoachRelationship.request_id == ClientCoachRequest.id,
+            )
+            .where(
+                ClientCoachRequest.coach_id == account.coach_id,
+                ClientCoachRelationship.is_active == True,
+            )
+        ).all()
+
+        for client_account in client_accounts:
+            add_affected_account(client_account)
+
+    return list(affected_accounts_by_id.values())
+
+
+def notify_affected_accounts(
+    db: Session,
+    deactivated_account: Account,
+    affected_accounts: list[Account],
+):
+    """
+    Creates notification records for accounts affected by a user's deactivation.
+    """
+    role = "account"
+    if deactivated_account.client_id is not None:
+        role = "client"
+    elif deactivated_account.coach_id is not None:
+        role = "coach"
+
+    message = f"{deactivated_account.name} has deactivated their account."
+    details = f"{role.capitalize()} account {deactivated_account.id} was deactivated."
+
+    for affected_account in affected_accounts:
+        if affected_account.id is None:
+            continue
+
+        db.add(
+            Notification(
+                account_id=affected_account.id,
+                fav_category="account_deactivated",
+                message=message,
+                details=details,
+                is_read=False,
+            )
+        )
+
+
+def delete_client_coach_mappings(db: Session, account: Account):
+    if account.client_id is not None:
+        requests = db.exec(
+            select(ClientCoachRequest)
+            .where(ClientCoachRequest.client_id == account.client_id)
+        ).all()
+
+        for request in requests:
+            relationships = db.exec(
+                select(ClientCoachRelationship)
+                .where(ClientCoachRelationship.request_id == request.id)
+            ).all()
+
+            for relationship in relationships:
+                db.delete(relationship)
+
+            db.delete(request)
+
+    if account.coach_id is not None:
+        requests = db.exec(
+            select(ClientCoachRequest)
+            .where(ClientCoachRequest.coach_id == account.coach_id)
+        ).all()
+
+        for request in requests:
+            relationships = db.exec(
+                select(ClientCoachRelationship)
+                .where(ClientCoachRelationship.request_id == request.id)
+            ).all()
+
+            for relationship in relationships:
+                db.delete(relationship)
+
+            db.delete(request)
+
+
+def delete_role_promotion_records(db: Session, account: Account):
+    """
+    Remove role-promotion records that reference the account being deleted.
+    CoachRequest rows point at RolePromotionResolution, so clear those links before
+    deleting the resolution rows.
+    """
+    if account.coach_id is not None:
+        coach_requests = db.exec(
+            select(CoachRequest).where(CoachRequest.coach_id == account.coach_id)
+        ).all()
+
+        for coach_request in coach_requests:
+            db.delete(coach_request)
+
+    if account.admin_id is not None:
+        resolution_query = select(RolePromotionResolution).where(
+            or_(
+                RolePromotionResolution.account_id == account.id,
+                RolePromotionResolution.admin_id == account.admin_id,
+            )
+        )
+    else:
+        resolution_query = select(RolePromotionResolution).where(
+            RolePromotionResolution.account_id == account.id
+        )
+
+    resolutions = db.exec(resolution_query).all()
+    resolution_ids = [
+        resolution.id for resolution in resolutions if resolution.id is not None
+    ]
+
+    if resolution_ids:
+        linked_requests = db.exec(
+            select(CoachRequest).where(
+                CoachRequest.role_promotion_resolution_id.in_(resolution_ids)
+            )
+        ).all()
+
+        for linked_request in linked_requests:
+            linked_request.role_promotion_resolution_id = None
+            db.add(linked_request)
+
+    for resolution in resolutions:
+        db.delete(resolution)
+
+
 class DeleteAccountResponse(BaseModel):
     success: bool
     message: str
@@ -303,19 +478,37 @@ def deactivate_account(
     acc: Account = Depends(get_active_account),
 ):
     """
-    Deactivate the current user's account. This sets is_active to False and prevents login/access.
+    Deactivate the current user's account.
+    This sets is_active to False and prevents access to protected routes.
+    It also notifies affected coaches/clients.
     """
     account = db.get(Account, acc.id)
+
     if account is None:
-        raise HTTPException(404, detail="Account not found")
+        raise HTTPException(status_code=404, detail="Account not found")
+
     if not account.is_active:
-        return DeactivateAccountResponse(success=False, message="Account is already deactivated.")
+        return DeactivateAccountResponse(
+            success=False,
+            message="Account is already deactivated.",
+        )
+
+    affected_accounts = get_affected_accounts(db, account)
+
     account.is_active = False
     db.add(account)
+
+    notify_affected_accounts(db, account, affected_accounts)
+
+    delete_client_coach_mappings(db, account)
+
     db.commit()
     db.refresh(account)
-    return DeactivateAccountResponse(success=True, message="Account deactivated successfully.")
 
+    return DeactivateAccountResponse(
+        success=True,
+        message="Account deactivated successfully.",
+    )
 
 @router.post("/activate", response_model=ActivateAccountResponse)
 def activate_account(
@@ -323,7 +516,7 @@ def activate_account(
     acc: Account = Depends(get_account_even_if_inactive),
 ):
     """
-    Activate the current user's account. This sets is_active to True and allows login/access.
+    Reactivate the current user's account. This sets is_active to True and allows login/access.
     """
     account = db.get(Account, acc.id)
     if account is None:
@@ -423,6 +616,15 @@ def delete_account(
     db.flush()  # apply pending deletes before parent rows go
 
     # ── parent role rows (client/coach already cascade their own children) ──
+    if account.client_id is not None:
+        client = db.get(Client, account.client_id)
+        if client:
+    if account is None:
+        raise HTTPException(404, detail="Account not found")
+
+    delete_client_coach_mappings(db, account)
+    delete_role_promotion_records(db, account)
+
     if account.client_id is not None:
         client = db.get(Client, account.client_id)
         if client:

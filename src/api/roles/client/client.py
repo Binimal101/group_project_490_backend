@@ -3,6 +3,7 @@ from typing import Optional, List
 from sqlmodel import Session, select
 from sqlalchemy import func, desc, asc, delete
 
+
 from src.api.dependencies import get_active_account, get_client_account, PaginationParams
 from src.api.storage import upload_public_file_to_supabase
 
@@ -30,6 +31,7 @@ from src.api.roles.client.domain import (
     PayInvoiceInput,
     PayInvoiceResponse,
 )
+from src.api.roles.coach.domain import CoachAvailabilityResponse
 
 from src.api.roles.shared.domain import DeleteRequestResponse
 
@@ -38,8 +40,20 @@ from src.database.coach.models import Coach, Experience, Certifications, CoachEx
 from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
 from src.database.account.models import Account, Availability, Notification
 from src.database.client.models import Client, ClientAvailability, FitnessGoals, ClientWorkoutPlan
+from src.database.telemetry.models import (
+    HealthMetrics, 
+    ClientTelemetry, 
+    StepCount,
+    DailyMoodSurvey,
+    DailyWorkoutSurvey,
+    DailyBodyMetricsSurvey,
+    DailyStepsSurvey,
+    DailyMealSurvey,
+    CompletedMealActivity,
+    CompletedWorkout,
+    DailyProgressPicture,
+)
 from src.database.workouts_and_activities.models import WorkoutPlan
-from src.database.telemetry.models import HealthMetrics, ClientTelemetry, DailyProgressPicture
 from src.api.roles.client.fitness import (
     TELEMETRY_PROGRESS_PICTURE,
     TELEMETRY_WEIGHT,
@@ -129,6 +143,7 @@ def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_s
             db.flush()
             client.client_availability_id = ca.id
             ca_id = ca.id
+            db.add(client)
         else:
             db.exec(delete(Availability).where(Availability.client_availability_id == ca_id))
 
@@ -190,6 +205,37 @@ def me(db = Depends(get_session), acc: Account = Depends(get_client_account)):
         last_recorded_height=height,
     )
 
+
+@router.get("/coach_availability/{coach_id}", response_model=CoachAvailabilityResponse)
+def get_coach_availability_for_client(coach_id: int, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Proxy endpoint for clients to fetch a coach's availability using the client router prefix.
+    Mirrors the logic in the coach router so client-side calls to `/roles/client/coach_availability/{coach_id}` work.
+    """
+    if acc.client_id is None:
+        raise HTTPException(404, detail="Please log in to view coach availability")
+
+    coach = db.get(Coach, coach_id)
+    if coach is None:
+        raise HTTPException(404, detail="Coach not found")
+
+    coach_account = db.exec(
+        select(Account).where(
+            Account.coach_id == coach_id,
+            Account.is_active == True,
+        )
+    ).first()
+
+    if coach_account is None or coach.verified == False:
+        raise HTTPException(404, detail="Coach is not verified yet, availability is not viewable")
+
+    if coach.coach_availability is None:
+        return CoachAvailabilityResponse(coach_availabilities=[])
+
+    availabilities = db.exec(select(Availability).where(Availability.coach_availability_id == coach.coach_availability)).all()
+
+    return CoachAvailabilityResponse(coach_availabilities=availabilities)
+
 @router.post("/assign_plan", response_model=AssignWorkoutPlanResponse)
 def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
@@ -229,6 +275,16 @@ def create_coach_request(coach_id: int, db = Depends(get_session), acc: Account 
 
     if coach is None:
         raise HTTPException(404, detail="Coach not found")
+
+    coach_account = db.exec(
+        select(Account).where(
+            Account.coach_id == coach.id,
+            Account.is_active == True,
+        )
+    ).first()
+
+    if coach_account is None or not coach.verified:
+        raise HTTPException(404, detail="Coach not available")
     
     existing_request = db.query(ClientCoachRequest).filter_by(
         client_id=client.id, coach_id=coach.id, is_accepted=None
@@ -245,7 +301,6 @@ def create_coach_request(coach_id: int, db = Depends(get_session), acc: Account 
     db.refresh(request)
 
     # notify the coach's account that a new request was created
-    coach_account = db.exec(select(Account).where(Account.coach_id == coach.id)).first()
     if coach_account and coach_account.id is not None:
         n = Notification(
             account_id=coach_account.id,
@@ -596,8 +651,20 @@ def get_review(coach_id: int, db = Depends(get_session), acc: Account = Depends(
     
     if acc.client_id is None:
         raise HTTPException(403, detail="You are not authorized to view this content")
-    
-    reviews = db.query(CoachReviews).filter(CoachReviews.coach_id == coach_id).all()
+
+    coach_account = db.exec(
+        select(Account).where(
+            Account.coach_id == coach_id,
+            Account.is_active == True,
+        )
+    ).first()
+
+    if coach_account is None:
+        return ReviewsResponse(reviews=[])
+
+    reviews = db.exec(
+        select(CoachReviews).where(CoachReviews.coach_id == coach_id)
+    ).all()
 
     return ReviewsResponse(reviews=reviews)
 
@@ -610,25 +677,33 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
     if acc is None:
         raise HTTPException(404, detail="Account not found")
 
-    coach_request = db.query(ClientCoachRequest).filter(
-        ClientCoachRequest.client_id == acc.client_id,
-        ClientCoachRequest.is_accepted == True
-    ).order_by(ClientCoachRequest.last_updated).first()
+    coach_row = db.exec(
+        select(ClientCoachRequest, ClientCoachRelationship)
+        .join(
+            ClientCoachRelationship,
+            ClientCoachRelationship.request_id == ClientCoachRequest.id,
+        )
+        .where(
+            ClientCoachRequest.client_id == acc.client_id,
+            ClientCoachRequest.is_accepted.is_(True),
+            ClientCoachRelationship.is_active.is_(True),
+            ClientCoachRelationship.client_blocked.is_(False),
+            ClientCoachRelationship.coach_blocked.is_(False),
+        )
+        .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
+    ).first()
 
-    if coach_request is None:
+    if coach_row is None:
         raise HTTPException(404, detail="You do not have an accepted coach request")
 
-    relationship = db.query(ClientCoachRelationship).filter(ClientCoachRelationship.request_id == coach_request.id).first()
+    coach_request, relationship = coach_row
 
-    if relationship is None:
-        raise HTTPException(404, detail="Relationship not Found")
-
-    coach = db.query(Coach).filter(Coach.id == coach_request.coach_id).first()
+    coach = db.exec(select(Coach).where(Coach.id == coach_request.coach_id)).first()
 
     if coach is None:
         raise HTTPException(404, detail="Coach not found")
 
-    coach_account = db.query(Account).filter(Account.coach_id == coach.id).first()
+    coach_account = db.exec(select(Account).where(Account.coach_id == coach.id)).first()
 
     return {
         "coach_id": coach.id,
