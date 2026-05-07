@@ -615,16 +615,11 @@ def delete_account(
 
     db.flush()  # apply pending deletes before parent rows go
 
-    # ── parent role rows (client/coach already cascade their own children) ──
-    if account.client_id is not None:
-        client = db.get(Client, account.client_id)
-        if client:
-    if account is None:
-        raise HTTPException(404, detail="Account not found")
-
+    # ── client/coach relationship + role-promotion cleanup ──
     delete_client_coach_mappings(db, account)
     delete_role_promotion_records(db, account)
 
+    # ── parent role rows (client/coach already cascade their own children) ──
     if account.client_id is not None:
         client = db.get(Client, account.client_id)
         if client:
