@@ -119,8 +119,8 @@ def validate_blocks_against_availability(
 ) -> None:
     """Raise 409 if any block is not fully covered by the client's recurring availability template.
 
-    Ignores `is_blocked` — split/merge means booked slots are physically removed, so a booked
-    region simply won't appear among the rows.
+    Booked slots are physically removed via split, so a booked region simply won't appear
+    among the rows during validation.
     """
     rows = get_client_availability_rows(db, client_id)
     for start_dt, end_dt in blocks:

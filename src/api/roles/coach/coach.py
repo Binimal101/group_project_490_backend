@@ -407,37 +407,70 @@ def get_client_requests(db = Depends(get_session), acc: Account = Depends(get_co
 
 
 @router.get("/clients")
-def get_my_accepted_clients(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
+def get_my_accepted_clients(
+    text: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 24,
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
     """
-    Gets the list of all accepted clients for the authenticated coach.
-    Only returns clients with active relationships (accepted requests with active relationship).
-    Returns list of {relationship_id, client_id, request_id} objects.
+    Returns the coach's accepted clients enriched with account info and primary fitness goal.
+    Supports search by name (case-insensitive substring) and pagination.
+    Each item: {
+      relationship_id, client_id, request_id,
+      name, email, age, gender, pfp_url, goal
+    }
     """
     if acc.coach_id is None:
         raise HTTPException(404, detail="No coach profile found for this account")
 
-    # Get all accepted requests for this coach that have active relationships
-    requests = db.query(ClientCoachRequest).filter(
-        ClientCoachRequest.coach_id == acc.coach_id,
-        ClientCoachRequest.is_accepted == True
-    ).all()
+    # Single SQL pass — join requests → relationship → client → account
+    stmt = (
+        select(
+            ClientCoachRequest.id.label("request_id"),  # type: ignore
+            ClientCoachRelationship.id.label("relationship_id"),  # type: ignore
+            ClientCoachRequest.client_id.label("client_id"),
+            Account.id.label("account_id"),
+            Account.name.label("name"),
+            Account.email.label("email"),
+            Account.age.label("age"),
+            Account.gender.label("gender"),
+            Account.pfp_url.label("pfp_url"),
+        )
+        .join(ClientCoachRelationship, ClientCoachRelationship.request_id == ClientCoachRequest.id)
+        .join(Account, Account.client_id == ClientCoachRequest.client_id)
+        .where(
+            ClientCoachRequest.coach_id == acc.coach_id,
+            ClientCoachRequest.is_accepted == True,
+            ClientCoachRelationship.is_active == True,
+        )
+    )
+    if text:
+        stmt = stmt.where(func.lower(Account.name).like(f"%{text.lower()}%"))
 
-    clients = []
-    for request in requests:
-        # Check if relationship is active
-        relationship = db.exec(select(ClientCoachRelationship).where(
-            ClientCoachRelationship.request_id == request.id,
-            ClientCoachRelationship.is_active == True
-        )).first()
+    stmt = stmt.order_by(Account.name).offset(skip).limit(limit)
+    rows = db.exec(stmt).all()
 
-        if relationship:
-            clients.append({
-                "relationship_id": relationship.id,
-                "client_id": request.client_id,
-                "request_id": request.id
-            })
+    items = []
+    for r in rows:
+        goal_row = db.exec(
+            select(FitnessGoals).where(FitnessGoals.client_id == r.client_id).order_by(FitnessGoals.id.desc())
+        ).first()
+        items.append({
+            "relationship_id": r.relationship_id,
+            "client_id": r.client_id,
+            "request_id": r.request_id,
+            "account_id": r.account_id,
+            "name": r.name,
+            "email": r.email,
+            "age": r.age,
+            "gender": r.gender,
+            "pfp_url": r.pfp_url,
+            "goal": goal_row.goal_enum if goal_row and getattr(goal_row, "goal_enum", None) else None,
+        })
 
-    return clients
+    return items
 
 
 @router.get("/lookup_client/{client_id}", response_model=ClientLookupResponse)
