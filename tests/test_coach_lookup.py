@@ -31,12 +31,18 @@ def test_get_client_requests_list_format_and_contains(test_client, coach_auth_he
     assert req_resp.status_code == 200
     request_id = req_resp.json()["request_id"]
 
-    # coach should see the pending request as a list of {client_id, request_id}
+    # coach should see the pending request as a list of objects keyed by client_id+request_id.
+    # The endpoint enriches each entry with name/age/gender/pfp_url/goal for dashboard
+    # display, so we match on the identifying fields rather than exact dict equality.
     list_resp = test_client.get("/roles/coach/client_requests", headers=coach_auth_header)
     assert list_resp.status_code == 200
     items = list_resp.json()
     assert isinstance(items, list)
-    assert {"client_id": client_id, "request_id": request_id} in items
+    match = next(
+        (i for i in items if i.get("client_id") == client_id and i.get("request_id") == request_id),
+        None,
+    )
+    assert match is not None, f"expected request {request_id} for client {client_id} in {items}"
 
 
 def test_lookup_client_pending_request_returns_details(test_client, coach_auth_header):

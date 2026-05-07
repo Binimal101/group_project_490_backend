@@ -6,6 +6,21 @@ from src.database.account.models import Account, Availability, Notification
 from src.database.client.models import Client, FitnessGoals
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.payment.models import PricingPlan, PaymentInformation, Subscription, BillingCycle, Invoice
+from src.database.telemetry.models import (
+    HealthMetrics, ClientTelemetry, DailyProgressPicture,
+    CompletedMealActivity, CompletedWorkout,
+)
+from src.database.coach_client_relationship.models import (
+    ClientCoachRelationship, ClientCoachRequest, ChatMessage,
+)
+from src.database.meal.models import Meal, ClientPrescribedMeal, MealIngredient
+from src.database.workouts_and_activities.models import WorkoutPlanActivity
+from src.database.role_management.models import RolePromotionResolution, CoachRequest
+from src.database.reports.models import CoachReviews
+from src.api.dependencies import get_active_account, get_account_even_if_inactive
+from src.api.storage import upload_public_file_to_supabase
+from src.api.roles.shared.domain import FullProfileResponse, AccountResponse, UpdateAccountInput
+from sqlmodel import Session, select, desc, func, delete, or_
 from src.database.telemetry.models import HealthMetrics, ClientTelemetry, DailyProgressPicture
 from src.database.coach_client_relationship.models import ClientCoachRelationship, ClientCoachRequest
 from src.database.reports.models import CoachReviews
@@ -522,14 +537,89 @@ def delete_account(
 ):
     """
     Permanently delete the current user's account and all associated data.
+
+    Several FK columns referencing `account` and `admin` use NO ACTION (the DB
+    refuses to delete a parent that still has children). The columns are also
+    NOT NULL, so we can't simply detach them. So before issuing the deletes,
+    walk the dependency chain from the leaves up and remove each level.
     """
     account = db.get(Account, acc.id)
     if account is None:
         raise HTTPException(404, detail="Account not found")
 
+    account_id = account.id
+    admin_id = account.admin_id
+
+    # ── workout_plan_activity branch ───────────────────────────────────
+    # completed_workout.workout_plan_activity_id → workout_plan_activity (NO ACTION)
+    wpa_ids_subq = select(WorkoutPlanActivity.id).where(
+        WorkoutPlanActivity.modified_by_account_id == account_id
+    )
+    db.exec(
+        delete(CompletedWorkout).where(
+            CompletedWorkout.workout_plan_activity_id.in_(wpa_ids_subq)
+        )
+    )
+    db.exec(
+        delete(WorkoutPlanActivity).where(
+            WorkoutPlanActivity.modified_by_account_id == account_id
+        )
+    )
+
+    # ── meal / prescribed_meal branch ──────────────────────────────────
+    # completed_meal_activity references both client_prescribed_meal_id and on_demand_meal_id (both NO ACTION)
+    # client_prescribed_meal.meal_id → meal (NO ACTION)
+    # meal_ingredient.meal_id → meal (NO ACTION)
+    meal_ids_subq = select(Meal.id).where(Meal.created_by_account_id == account_id)
+    cpm_ids_subq = select(ClientPrescribedMeal.id).where(
+        or_(
+            ClientPrescribedMeal.prescribed_by_account_id == account_id,
+            ClientPrescribedMeal.meal_id.in_(meal_ids_subq),
+        )
+    )
+    db.exec(
+        delete(CompletedMealActivity).where(
+            or_(
+                CompletedMealActivity.on_demand_meal_id.in_(meal_ids_subq),
+                CompletedMealActivity.client_prescribed_meal_id.in_(cpm_ids_subq),
+            )
+        )
+    )
+    db.exec(
+        delete(ClientPrescribedMeal).where(
+            or_(
+                ClientPrescribedMeal.prescribed_by_account_id == account_id,
+                ClientPrescribedMeal.meal_id.in_(meal_ids_subq),
+            )
+        )
+    )
+    db.exec(delete(MealIngredient).where(MealIngredient.meal_id.in_(meal_ids_subq)))
+    db.exec(delete(Meal).where(Meal.created_by_account_id == account_id))
+
+    # ── chat_message ──────────────────────────────────────────────────
+    db.exec(delete(ChatMessage).where(ChatMessage.from_account_id == account_id))
+
+    # ── role_promotion_resolution (only the rows this user is the subject of) ──
+    # We do NOT match on admin_id here: admin rows can be shared across multiple
+    # accounts (data shows account 21 and 33 both reference admin_id=3), so an
+    # admin_id match could nuke resolutions belonging to a different user.
+    # coach_request.role_promotion_resolution_id → role_promotion_resolution (NO ACTION)
+    rprs_filter = RolePromotionResolution.account_id == account_id
+    rprs_ids_subq = select(RolePromotionResolution.id).where(rprs_filter)
+    db.exec(
+        delete(CoachRequest).where(
+            CoachRequest.role_promotion_resolution_id.in_(rprs_ids_subq)
+        )
+    )
+    db.exec(delete(RolePromotionResolution).where(rprs_filter))
+
+    db.flush()  # apply pending deletes before parent rows go
+
+    # ── client/coach relationship + role-promotion cleanup ──
     delete_client_coach_mappings(db, account)
     delete_role_promotion_records(db, account)
 
+    # ── parent role rows (client/coach already cascade their own children) ──
     if account.client_id is not None:
         client = db.get(Client, account.client_id)
         if client:
@@ -540,10 +630,11 @@ def delete_account(
         if coach:
             db.delete(coach)
 
-    if account.admin_id is not None:
-        admin = db.get(Admin, account.admin_id)
-        if admin:
-            db.delete(admin)
+    # NOTE: We deliberately do NOT delete the admin row, even if account.admin_id
+    # is set. Multiple accounts can share an admin_id, so deleting the admin row
+    # would orphan the others. The user's account row is about to vanish, taking
+    # its admin_id reference with it — leaving the admin row intact is safe and
+    # preserves access for any other accounts that share it.
 
     db.delete(account)
     db.commit()
