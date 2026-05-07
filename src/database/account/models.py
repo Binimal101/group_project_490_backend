@@ -63,6 +63,7 @@ class Availability(SQLModelLU, table=True):
     max_time_commitment_seconds: Optional[Decimal] = Field(default=None, max_digits=8, decimal_places=2)
     client_availability_id: Optional[int] = Field(default=None, foreign_key="client_availability.id")
     coach_availability_id: Optional[int] = Field(default=None, foreign_key="coach_availability.id")
+    is_blocked: bool = Field(default=False)
 
     @model_validator(mode="after")
     def validate_time(self):

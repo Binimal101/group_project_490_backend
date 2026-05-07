@@ -48,6 +48,10 @@ from src.api.roles.client.fitness import (
 )
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan
+from src.api.roles.services import (
+    collect_availability_rows_for_range,
+    set_availability_blocked,
+)
 
 
 router = APIRouter(prefix="/roles/client", tags=["client"])
@@ -202,6 +206,20 @@ def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_sessio
     if plan is None:
         raise HTTPException(404, detail="Workout plan not found")
 
+    matched_rows, uncovered = collect_availability_rows_for_range(
+        db, acc.client_id, payload.start_dt, payload.end_dt
+    )
+    if uncovered:
+        raise HTTPException(
+            409,
+            detail="Requested time range is not within your declared availability."
+        )
+    if any(r.is_blocked for r in matched_rows):
+        raise HTTPException(
+            409,
+            detail="Requested time range overlaps a slot already booked by another plan."
+        )
+
     client_workout_plan = ClientWorkoutPlan(
         client_id=acc.client_id,
         workout_plan_id=payload.workout_plan_id,
@@ -209,6 +227,9 @@ def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_sessio
         end_time=payload.end_dt
     )
     db.add(client_workout_plan)
+    set_availability_blocked(
+        db, acc.client_id, payload.start_dt, payload.end_dt, blocked=True
+    )
     db.commit()
     db.refresh(client_workout_plan)
 

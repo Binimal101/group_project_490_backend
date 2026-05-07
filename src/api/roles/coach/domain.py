@@ -189,15 +189,35 @@ class WorkoutEquipmentInput(BaseModel):
     is_required: bool = True
     is_recommended: bool = True
 
+class WorkoutActivityTier(BaseModel):
+    intensity_value: int
+    estimated_calories_per_unit_frequency: Decimal = Field(max_digits=10, decimal_places=6)
+
+
 class CreateWorkoutInput(BaseModel):
     name: str
     description: str
     instructions: str
     workout_type: str
     equipment: List[WorkoutEquipmentInput] = []
+    intensity_measure: str
+    activity_tiers: List[WorkoutActivityTier]
+
+    @model_validator(mode="after")
+    def validate_three_distinct_tiers(self):
+        if len(self.activity_tiers) != 3:
+            raise ValueError("Exactly 3 activity tiers are required (3 intensity values for the chosen measure).")
+        values = [t.intensity_value for t in self.activity_tiers]
+        if len(set(values)) != 3:
+            raise ValueError("The 3 activity tiers must have distinct intensity_value entries.")
+        if not self.intensity_measure or not self.intensity_measure.strip():
+            raise ValueError("intensity_measure is required.")
+        return self
+
 
 class CreateWorkoutResponse(BaseModel):
     workout_id: int
+    workout_activity_ids: List[int]
 
 class CreateActivityInput(BaseModel):
     workout_id: int
