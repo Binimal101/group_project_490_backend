@@ -63,7 +63,7 @@ def get_account_from_bearer(
 
 def get_active_account(account: Account = Depends(get_account_from_bearer)) -> Account:
     if not account.is_active:
-        raise HTTPException(status_code=400, detail="account deactivated")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account deactivated")
     return account
 
 def get_account_even_if_inactive(
