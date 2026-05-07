@@ -12,7 +12,7 @@ def build_client_init_payload(goal="weight loss", weight=170, weekday="monday"):
         "payment_information": {
             "ccnum": TEST_ALT_CARD_NUMBER,
             "cv": "123",
-            "exp_date": str(date(2026, 12, 31)),
+            "exp_date": str(date(date.today().year + 5, 12, 31)),
         },
         "availabilities": [
             {"weekday": weekday, "start_time": "08:00:00", "end_time": "10:00:00"}

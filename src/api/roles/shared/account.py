@@ -301,8 +301,9 @@ def get_affected_accounts(db: Session, account: Account) -> list[Account]:
 
     # If the deactivated account is a client, notify their active coach(es)
     if account.client_id is not None:
-        relationships = db.exec(
-            select(ClientCoachRequest, ClientCoachRelationship)
+        coach_accounts = db.exec(
+            select(Account)
+            .join(ClientCoachRequest, ClientCoachRequest.coach_id == Account.coach_id)
             .join(
                 ClientCoachRelationship,
                 ClientCoachRelationship.request_id == ClientCoachRequest.id,
@@ -313,17 +314,14 @@ def get_affected_accounts(db: Session, account: Account) -> list[Account]:
             )
         ).all()
 
-        for request, relationship in relationships:
-            coach_account = db.exec(
-                select(Account).where(Account.coach_id == request.coach_id)
-            ).first()
-
+        for coach_account in coach_accounts:
             add_affected_account(coach_account)
 
     # If the deactivated account is a coach, notify their active client(s)
     if account.coach_id is not None:
-        relationships = db.exec(
-            select(ClientCoachRequest, ClientCoachRelationship)
+        client_accounts = db.exec(
+            select(Account)
+            .join(ClientCoachRequest, ClientCoachRequest.client_id == Account.client_id)
             .join(
                 ClientCoachRelationship,
                 ClientCoachRelationship.request_id == ClientCoachRequest.id,
@@ -334,11 +332,7 @@ def get_affected_accounts(db: Session, account: Account) -> list[Account]:
             )
         ).all()
 
-        for request, relationship in relationships:
-            client_account = db.exec(
-                select(Account).where(Account.client_id == request.client_id)
-            ).first()
-
+        for client_account in client_accounts:
             add_affected_account(client_account)
 
     return list(affected_accounts_by_id.values())
@@ -352,22 +346,25 @@ def notify_affected_accounts(
     """
     Creates notification records for accounts affected by a user's deactivation.
     """
+    role = "account"
+    if deactivated_account.client_id is not None:
+        role = "client"
+    elif deactivated_account.coach_id is not None:
+        role = "coach"
+
+    message = f"{deactivated_account.name} has deactivated their account."
+    details = f"{role.capitalize()} account {deactivated_account.id} was deactivated."
+
     for affected_account in affected_accounts:
         if affected_account.id is None:
             continue
-
-        role = "account"
-        if deactivated_account.client_id is not None:
-            role = "client"
-        elif deactivated_account.coach_id is not None:
-            role = "coach"
 
         db.add(
             Notification(
                 account_id=affected_account.id,
                 fav_category="account_deactivated",
-                message=f"{deactivated_account.name} has deactivated their account.",
-                details=f"{role.capitalize()} account {deactivated_account.id} was deactivated.",
+                message=message,
+                details=details,
                 is_read=False,
             )
         )

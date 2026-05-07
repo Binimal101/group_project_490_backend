@@ -1,3 +1,5 @@
+from datetime import date
+
 from tests.payload_tools.constants import TEST_CARD_NUMBER
 
 
@@ -9,7 +11,7 @@ def make_client_profile(test_client, auth_header):
         "payment_information": {
             "ccnum": TEST_CARD_NUMBER,
             "cv": "123",
-            "exp_date": "2026-12-31"
+            "exp_date": str(date(date.today().year + 5, 12, 31))
         },
         "availabilities": [
             {

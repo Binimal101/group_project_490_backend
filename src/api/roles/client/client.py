@@ -677,26 +677,26 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
     if acc is None:
         raise HTTPException(404, detail="Account not found")
 
-    coach_request = db.exec(
-        select(ClientCoachRequest)
+    coach_row = db.exec(
+        select(ClientCoachRequest, ClientCoachRelationship)
+        .join(
+            ClientCoachRelationship,
+            ClientCoachRelationship.request_id == ClientCoachRequest.id,
+        )
         .where(
             ClientCoachRequest.client_id == acc.client_id,
-            ClientCoachRequest.is_accepted == True,
+            ClientCoachRequest.is_accepted.is_(True),
+            ClientCoachRelationship.is_active.is_(True),
+            ClientCoachRelationship.client_blocked.is_(False),
+            ClientCoachRelationship.coach_blocked.is_(False),
         )
-        .order_by(ClientCoachRequest.last_updated)
+        .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
     ).first()
 
-    if coach_request is None:
+    if coach_row is None:
         raise HTTPException(404, detail="You do not have an accepted coach request")
 
-    relationship = db.exec(
-        select(ClientCoachRelationship).where(
-            ClientCoachRelationship.request_id == coach_request.id
-        )
-    ).first()
-
-    if relationship is None:
-        raise HTTPException(404, detail="Relationship not Found")
+    coach_request, relationship = coach_row
 
     coach = db.exec(select(Coach).where(Coach.id == coach_request.coach_id)).first()
 

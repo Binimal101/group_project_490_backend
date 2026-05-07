@@ -708,11 +708,12 @@ def get_my_clients(
         .join(ClientCoachRelationship, ClientCoachRelationship.request_id == ClientCoachRequest.id)
         .where(
             ClientCoachRequest.coach_id == acc.coach_id,
-            ClientCoachRequest.is_accepted == True,
-            ClientCoachRelationship.is_active == True,
-            ClientCoachRelationship.client_blocked == False,
-            ClientCoachRelationship.coach_blocked == False,
+            ClientCoachRequest.is_accepted.is_(True),
+            ClientCoachRelationship.is_active.is_(True),
+            ClientCoachRelationship.client_blocked.is_(False),
+            ClientCoachRelationship.coach_blocked.is_(False),
         )
+        .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
         .offset(pagination.skip)
         .limit(pagination.limit)
     ).all()
