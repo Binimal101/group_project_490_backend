@@ -297,6 +297,12 @@ def rescind_request(request_id: int, db = Depends(get_session), acc: Account = D
     if request.client_id != acc.client_id:
         raise HTTPException(403, detail="Not authorized to rescind this request")
 
+    if request.is_accepted is not None:
+        raise HTTPException(
+            409,
+            detail="Cannot rescind a resolved request; use terminate_relationship instead."
+        )
+
     coach_account = db.exec(select(Account).where(Account.coach_id == request.coach_id)).first()
 
     if coach_account and coach_account.id is not None:
@@ -631,17 +637,24 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
     if acc is None:
         raise HTTPException(404, detail="Account not found")
 
-    coach_request = db.query(ClientCoachRequest).filter(
-        ClientCoachRequest.client_id == acc.client_id,
-        ClientCoachRequest.is_accepted == True
-    ).order_by(ClientCoachRequest.last_updated).first()
-
-    if coach_request is None:
-        raise HTTPException(404, detail="You do not have an accepted coach request")
-
-    relationship = db.query(ClientCoachRelationship).filter(ClientCoachRelationship.request_id == coach_request.id).first()
+    # is_accepted alone is insufficient — termination flips is_active only.
+    relationship = (
+        db.query(ClientCoachRelationship)
+        .join(ClientCoachRequest, ClientCoachRelationship.request_id == ClientCoachRequest.id)
+        .filter(
+            ClientCoachRequest.client_id == acc.client_id,
+            ClientCoachRequest.is_accepted == True,
+            ClientCoachRelationship.is_active == True,
+        )
+        .order_by(ClientCoachRequest.last_updated)
+        .first()
+    )
 
     if relationship is None:
+        raise HTTPException(404, detail="No active coach relationship")
+
+    coach_request = db.get(ClientCoachRequest, relationship.request_id)
+    if coach_request is None:
         raise HTTPException(404, detail="Relationship not Found")
 
     coach = db.query(Coach).filter(Coach.id == coach_request.coach_id).first()

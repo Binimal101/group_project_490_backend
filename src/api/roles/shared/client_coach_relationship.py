@@ -29,6 +29,12 @@ def delete_coach_request(
     if request is None:
         raise HTTPException(404, detail="Request not found")
 
+    if request.is_accepted is not None:
+        raise HTTPException(
+            409,
+            detail="Cannot delete a resolved request; use terminate_relationship instead."
+        )
+
     if context["other"].is_coach:
         message = "An incoming coach request was rescinded."
         details = f"Request {request.id} was rescinded from potential client."
@@ -57,13 +63,16 @@ def terminate_relationship(
     db = Depends(get_session),
 ):
     """
-    Deletes a client-coach relationship. Both client and coach can delete the relationshio
+    Ends an active relationship by flipping is_active=False. No rows are
+    deleted; both the request and relationship persist as audit history.
     """
 
     relationship = db.get(ClientCoachRelationship, relationship_id)
 
     if relationship is None:
         raise HTTPException(404, detail="Relationship not found")
+    if not relationship.is_active:
+        raise HTTPException(409, detail="Relationship is already inactive")
 
     # notify both parties about termination
     if context["other"].account and context["other"].account.id is not None:
