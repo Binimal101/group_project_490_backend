@@ -1,4 +1,6 @@
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, Query
+from pydantic import BaseModel
 from typing import Optional, List
 from sqlmodel import Session, select
 from sqlalchemy import func, desc, asc, delete
@@ -29,6 +31,8 @@ from src.api.roles.client.domain import (
     AssignWorkoutPlanResponse,
     PayInvoiceInput,
     PayInvoiceResponse,
+    AvailabilityResponse,
+    BusySlotResponse,
 )
 
 from src.api.roles.shared.domain import DeleteRequestResponse
@@ -49,13 +53,32 @@ from src.api.roles.client.fitness import (
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan
 from src.api.roles.services import (
-    validate_blocks_against_availability,
-    block_availability_range,
-    unblock_availability_range,
+    create_availability_row,
+    create_busy_for_plan,
+    create_manual_busy_slot,
+    delete_availability_row,
+    delete_busy_slot_row,
+    list_availability_for_account,
+    list_busy_slots_for_account,
+    update_availability_row,
+    validate_schedulable,
 )
 
 
 router = APIRouter(prefix="/roles/client", tags=["client"])
+
+
+class AvailabilityWindowInput(BaseModel):
+    start_dt: datetime
+    end_dt: datetime
+    repeats_weekly: bool = False
+    recurrence_end_dt: Optional[datetime] = None
+
+
+class BusySlotInput(BaseModel):
+    start_dt: datetime
+    end_dt: datetime
+    note: Optional[str] = None
 
 @router.post("/initial_survey", response_model=CreateClientResponse)
 def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_session), acc: Account = Depends(get_active_account)):
@@ -200,11 +223,13 @@ def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_sessio
     """
     Assigns a workout plan to the authenticated client across one or more time blocks.
     Each block becomes its own ClientWorkoutPlan row sharing the same workout_plan_id.
-    Validates every block against the client's recurring availability template,
-    then carves the booked time out (split/merge of Availability rows).
+    Validates every block against the account's date-based availability and any busy slots.
     """
     if acc.client_id is None:
         raise HTTPException(404, detail="Client profile not found")
+
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
 
     plan = db.get(WorkoutPlan, payload.workout_plan_id)
     if plan is None:
@@ -213,9 +238,7 @@ def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_sessio
     block_pairs = [(b.start_dt, b.end_dt) for b in payload.blocks]
     created_ids = []
     for start_dt, end_dt in block_pairs:
-        # Re-validate per block against the current (post-prior-carves) state so that
-        # two blocks asking for the same time slot don't both succeed.
-        validate_blocks_against_availability(db, acc.client_id, [(start_dt, end_dt)])
+        validate_schedulable(db, acc.id, start_dt, end_dt)
         cwp = ClientWorkoutPlan(
             client_id=acc.client_id,
             workout_plan_id=payload.workout_plan_id,
@@ -223,15 +246,119 @@ def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_sessio
             end_time=end_dt,
         )
         db.add(cwp)
-        block_availability_range(db, acc.client_id, start_dt, end_dt)
         db.flush()
         if cwp.id is None:
             raise HTTPException(500, detail="Something went wrong while assigning the workout plan")
+        create_busy_for_plan(db, acc.id, cwp.id, start_dt, end_dt)
         created_ids.append(cwp.id)
 
     db.commit()
     return AssignWorkoutPlanResponse(client_workout_plan_ids=created_ids)
 
+
+@router.get("/availability")
+def list_client_availability(
+    from_dt: datetime,
+    to_dt: datetime,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    return list_availability_for_account(db, acc.id, from_dt, to_dt)
+
+
+@router.post("/availability", response_model=AvailabilityResponse)
+def create_client_availability(
+    payload: AvailabilityWindowInput,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    row = create_availability_row(
+        db,
+        acc.id,
+        start_dt=payload.start_dt,
+        end_dt=payload.end_dt,
+        repeats_weekly=payload.repeats_weekly,
+        recurrence_end_dt=payload.recurrence_end_dt,
+    )
+    db.commit()
+    return row
+
+
+@router.put("/availability/{availability_id}", response_model=AvailabilityResponse)
+def update_client_availability(
+    availability_id: int,
+    payload: AvailabilityWindowInput,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    row = update_availability_row(
+        db,
+        acc.id,
+        availability_id,
+        start_dt=payload.start_dt,
+        end_dt=payload.end_dt,
+        repeats_weekly=payload.repeats_weekly,
+        recurrence_end_dt=payload.recurrence_end_dt,
+    )
+    db.commit()
+    return row
+
+
+@router.delete("/availability/{availability_id}")
+def delete_client_availability(
+    availability_id: int,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    delete_availability_row(db, acc.id, availability_id)
+    db.commit()
+    return {"details": "deleted"}
+
+
+@router.get("/busy_slots")
+def list_client_busy_slots(
+    from_dt: datetime,
+    to_dt: datetime,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    return list_busy_slots_for_account(db, acc.id, from_dt, to_dt)
+
+
+@router.post("/busy_slots", response_model=BusySlotResponse)
+def create_client_busy_slot(
+    payload: BusySlotInput,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    busy_slot = create_manual_busy_slot(db, acc.id, payload.start_dt, payload.end_dt, payload.note)
+    db.commit()
+    return busy_slot
+
+
+@router.delete("/busy_slots/{busy_slot_id}")
+def delete_client_busy_slot(
+    busy_slot_id: int,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    delete_busy_slot_row(db, acc.id, busy_slot_id)
+    db.commit()
+    return {"details": "deleted"}
 
 
 @router.post("/request_coach/{coach_id}", response_model=ClientCoachRequestResponse)

@@ -10,7 +10,7 @@ from src.database.workouts_and_activities.models import WorkoutPlanActivity
 from src.database.account.models import Account
 from src.api.dependencies import get_client_account, PaginationParams
 from src.database.client.models import ClientWorkoutPlan
-from src.api.roles.services import unblock_availability_range
+from src.api.roles.services import remove_busy_for_plan
 from src.database.meal.models import ClientPrescribedMeal
 from src.database.telemetry.models import (
     ClientTelemetry, 
@@ -367,7 +367,8 @@ def delete_client_workout_plan(
     if cwp is None or cwp.client_id != acc.client_id:
         raise HTTPException(404, detail="Scheduled plan not found")
 
-    unblock_availability_range(db, acc.client_id, cwp.start_time, cwp.end_time)
+    if cwp.id is not None:
+        remove_busy_for_plan(db, cwp.id)
     db.delete(cwp)
     db.commit()
     return {"details": "deleted"}

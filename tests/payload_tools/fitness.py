@@ -3,14 +3,24 @@ def build_create_workout_payload(
     description: str = "A very intense bicep workout",
     instructions: str = "Lift the dumbbells",
     workout_type: str = "rep",
-    equipment: list = []
+    equipment: list = [],
+    intensity_measure: str = "weight",
+    activity_tiers: list = None
 ):
+    if activity_tiers is None:
+        activity_tiers = [
+            {"intensity_value": 50, "estimated_calories_per_unit_frequency": 2.5},
+            {"intensity_value": 75, "estimated_calories_per_unit_frequency": 3.5},
+            {"intensity_value": 100, "estimated_calories_per_unit_frequency": 4.5}
+        ]
     return {
         "name": name,
         "description": description,
         "instructions": instructions,
         "workout_type": workout_type,
-        "equipment": equipment
+        "equipment": equipment,
+        "intensity_measure": intensity_measure,
+        "activity_tiers": activity_tiers
     }
 
 def build_create_activity_payload(

@@ -199,3 +199,26 @@ class PayInvoiceResponse(BaseModel):
     invoice_id: int
     amount_paid: float
     remaining_balance: float
+
+class AvailabilityResponse(BaseModel):
+    id: Optional[int]
+    account_id: Optional[int]
+    start_dt: Optional[datetime]
+    end_dt: Optional[datetime]
+    repeats_weekly: bool
+    recurrence_end_dt: Optional[datetime]
+    weekday: Optional[str]
+    start_time: Optional[str]
+    end_time: Optional[str]
+    max_time_commitment_seconds: Optional[float]
+    client_availability_id: Optional[int]
+    coach_availability_id: Optional[int]
+
+class BusySlotResponse(BaseModel):
+    id: Optional[int]
+    account_id: Optional[int]
+    start_dt: Optional[datetime]
+    end_dt: Optional[datetime]
+    source: str
+    source_id: Optional[int]
+    note: Optional[str]
