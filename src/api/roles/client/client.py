@@ -50,7 +50,6 @@ from src.database.telemetry.models import (
     DailyMealSurvey,
     CompletedMealActivity,
     CompletedWorkout,
-    DailyProgressPicture,
 )
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan

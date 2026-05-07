@@ -7,7 +7,7 @@ from src.database.account.models import Account, Availability, Notification
 from src.database.client.models import Client, FitnessGoals
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.payment.models import PricingPlan, PaymentInformation, Subscription, BillingCycle, Invoice
-from src.database.telemetry.models import HealthMetrics, ClientTelemetry, DailyProgressPicture
+from src.database.telemetry.models import HealthMetrics, ClientTelemetry
 from src.database.coach_client_relationship.models import ClientCoachRelationship, ClientCoachRequest
 from src.api.dependencies import get_account_from_bearer, get_active_account, get_account_even_if_inactive
 from sqlmodel import Session, select
