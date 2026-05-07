@@ -390,7 +390,7 @@ def get_coach_availability(coach_id: int, db = Depends(get_session), acc: Accoun
 @router.get("/client_requests", response_model=RequestListResponse)
 def get_client_requests(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
     """
-    Gets the list of all pending client requests for a given coach, including basic client info.
+    Gets the list of all pending client requests for a given coach.
     """
     if acc.coach_id is None:
         raise HTTPException(404, detail="No coach profile found for this account")
@@ -403,26 +403,12 @@ def get_client_requests(db = Depends(get_session), acc: Account = Depends(get_co
 
     items = []
     for r in requests:
-        # Fetch client account for basic info
         account = db.exec(select(Account).where(Account.client_id == r.client_id)).first()
-        client = db.get(Client, r.client_id)
-
-        # Get primary fitness goal
-        goal = None
-        if client:
-            goals = db.exec(select(FitnessGoals).where(FitnessGoals.client_id == r.client_id)).all()
-            if goals:
-                goal = goals[0].goal_enum
-
-        items.append({
-            "client_id": r.client_id,
-            "request_id": r.id,
-            "name": account.name if account else None,
-            "age": account.age if account else None,
-            "gender": account.gender if account else None,
-            "pfp_url": account.pfp_url if account else None,
-            "goal": goal,
-        })
+        fitness_goals = list(db.exec(select(FitnessGoals).where(FitnessGoals.client_id == r.client_id)).all())
+        base_account = None
+        if account:
+            base_account = {"id": account.id, "name": account.name, "email": account.email, "is_active": account.is_active, "gcp_user_id": account.gcp_user_id, "gender": account.gender, "bio": account.bio, "age": account.age, "pfp_url": account.pfp_url, "client_id": account.client_id, "coach_id": account.coach_id, "admin_id": account.admin_id, "created_at": account.created_at}
+        items.append({"client_id": r.client_id, "request_id": r.id, "base_account": base_account, "fitness_goals": fitness_goals})
 
     return items
 

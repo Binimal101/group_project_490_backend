@@ -169,13 +169,8 @@ class CoachEarningsResponse(BaseModel):
 class ClientRequestItem(BaseModel):
     client_id: int
     request_id: int
-    name: Optional[str] = None
-    age: Optional[int] = None
-    gender: Optional[str] = None
-    pfp_url: Optional[str] = None
-    goal: Optional[str] = None
 
-# Return a plain list of mappings: [{"client_id": x, "request_id": y, ...}, ...]
+# Return a plain list of mappings: [{"client_id": x, "request_id": y}, ...]
 RequestListResponse = List[ClientRequestItem]
 
 class CoachAccountResponse(BaseModel):
