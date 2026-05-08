@@ -274,6 +274,57 @@ def test_hirable_coaches_excludes_self_and_blocked(test_client, db_session):
     assert blocked_coach_me["id"] not in returned_account_ids  # blocked filtered
 
 
+def test_conversations_endpoint_returns_partner_profile(test_client, db_session):
+    """Conversation list must populate partner profile (name, pfp, age, gender, role)
+    so the unified Messages page can render real partner info instead of placeholders."""
+    a_header, _ = _signup_client(test_client, "convp_a")
+    b_header, b_me = _signup_client(test_client, "convp_b")
+
+    # B becomes a coach so the partner profile carries role flags.
+    _promote_to_coach(test_client, b_header, db_session)
+
+    chat = test_client.get(f"/roles/shared/chat/by-account/{b_me['id']}", headers=a_header).json()
+    chat_id = chat["chat_id"]
+    test_client.post(f"/roles/shared/chat/messages/{chat_id}?message_text=hi%20there", headers=a_header)
+
+    convos_resp = test_client.get("/roles/shared/chat/conversations", headers=a_header)
+    assert convos_resp.status_code == 200, convos_resp.text
+    convos = convos_resp.json()["conversations"]
+    target = next((c for c in convos if c["chat_id"] == chat_id), None)
+    assert target is not None
+    assert target["partner"]["id"] == b_me["id"]
+    assert target["partner"]["name"]
+    assert target["partner"]["is_coach"] is True
+    assert target["last_message"] == "hi there"
+
+
+def test_public_account_endpoint_returns_safe_fields(test_client):
+    """/roles/shared/account/public/{id} returns name/age/gender/pfp without sensitive auth fields."""
+    a_header, _ = _signup_client(test_client, "pubacc_a")
+    _, b_me = _signup_client(test_client, "pubacc_b")
+
+    res = test_client.get(f"/roles/shared/account/public/{b_me['id']}", headers=a_header)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["id"] == b_me["id"]
+    assert "name" in body and "age" in body and "gender" in body and "pfp_url" in body
+    # Sanity: no auth/internal fields leak.
+    for forbidden in ("hashed_password", "gcp_user_id"):
+        assert forbidden not in body
+
+
+def test_chat_partner_endpoint_returns_other_participant(test_client):
+    a_header, a_me = _signup_client(test_client, "ptn_a")
+    b_header, b_me = _signup_client(test_client, "ptn_b")
+
+    chat_id = test_client.get(f"/roles/shared/chat/by-account/{b_me['id']}", headers=a_header).json()["chat_id"]
+
+    a_view = test_client.get(f"/roles/shared/chat/partner/{chat_id}", headers=a_header).json()
+    b_view = test_client.get(f"/roles/shared/chat/partner/{chat_id}", headers=b_header).json()
+    assert a_view["id"] == b_me["id"]
+    assert b_view["id"] == a_me["id"]
+
+
 def test_account_deletion_cascades_chats_blocks_and_messages(test_client, db_session):
     """Repro of the recent DELETE failure: adding new tables without ON DELETE CASCADE
     used to make /roles/shared/account/delete fail with FK violations."""

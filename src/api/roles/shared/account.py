@@ -37,6 +37,28 @@ from datetime import datetime
 router = APIRouter(prefix="/roles/shared/account", tags=["shared", "account"])
 
 
+@router.get("/public/{account_id}")
+def get_public_account_summary(
+    account_id: int,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """Public profile for any account. Used for chat partner display etc.
+    Returns id, name, age, gender, pfp_url, role flags."""
+    target = db.get(Account, account_id)
+    if target is None:
+        raise HTTPException(404, detail="Account not found")
+    return {
+        "id": target.id,
+        "name": target.name,
+        "pfp_url": target.pfp_url,
+        "age": target.age,
+        "gender": target.gender,
+        "is_coach": target.coach_id is not None,
+        "is_client": target.client_id is not None,
+    }
+
+
 @router.get("/me", response_model=FullProfileResponse)
 def get_full_profile(
     db: Session = Depends(get_session),

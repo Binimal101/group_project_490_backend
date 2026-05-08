@@ -60,6 +60,30 @@ class ChatWithAccountResponse(BaseModel):
     chat_id: int
     messages: List[ChatMessage]
 
+
+class PublicAccountSummary(BaseModel):
+    """Lightweight, non-sensitive view of any account — used to render chat partner info."""
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    pfp_url: Optional[str] = None
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    is_coach: bool = False
+    is_client: bool = False
+
+
+class ConversationSummary(BaseModel):
+    chat_id: int
+    partner: PublicAccountSummary
+    last_message: Optional[str] = None
+    last_message_at: Optional[datetime] = None
+    unread_count: int = 0
+
+
+class ConversationListResponse(BaseModel):
+    conversations: List[ConversationSummary]
+
 class CreateWorkoutPlanResponse(BaseModel):
     workout_plan_id: int
 

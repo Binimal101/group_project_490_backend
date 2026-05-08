@@ -17,6 +17,9 @@ from src.api.roles.shared.domain import (
     SendMessageResponse,
     GetMessagesResponse,
     ChatWithAccountResponse,
+    ConversationListResponse,
+    ConversationSummary,
+    PublicAccountSummary,
 )
 
 
@@ -61,7 +64,103 @@ def _other_participant(db, chat_id: int, sender_id: int) -> AccountChat:
     return other
 
 
+def _public_summary(acc: Account) -> PublicAccountSummary:
+    return PublicAccountSummary(
+        id=acc.id,  # type: ignore
+        name=acc.name,
+        pfp_url=acc.pfp_url,
+        age=acc.age,
+        gender=acc.gender,
+        is_coach=acc.coach_id is not None,
+        is_client=acc.client_id is not None,
+    )
+
+
 # ─── endpoints ──────────────────────────────────────────────────────────────
+@router.get("/conversations", response_model=ConversationListResponse)
+def list_conversations(db = Depends(get_session), acc: Account = Depends(get_active_account)):
+    """All chats the caller participates in, with the other participant's public profile attached."""
+    if acc is None or acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+
+    # Chat ids that belong to the caller.
+    my_chat_ids = [
+        row.chat_id for row in db.exec(
+            select(AccountChat).where(AccountChat.account_id == acc.id)
+        ).all()
+    ]
+    if not my_chat_ids:
+        return ConversationListResponse(conversations=[])
+
+    # All participants of those chats (we'll filter out the caller below).
+    participants = db.exec(
+        select(AccountChat, Account)
+        .join(Account, Account.id == AccountChat.account_id)
+        .where(AccountChat.chat_id.in_(my_chat_ids))
+    ).all()
+
+    partners_by_chat: dict[int, Account] = {}
+    for ac, account in participants:
+        if account.id == acc.id:
+            continue
+        partners_by_chat[ac.chat_id] = account
+
+    # Latest message per chat.
+    latest_messages = db.exec(
+        select(ChatMessage).where(ChatMessage.chat_id.in_(my_chat_ids))
+    ).all()
+    latest_by_chat: dict[int, ChatMessage] = {}
+    for msg in latest_messages:
+        prev = latest_by_chat.get(msg.chat_id)
+        if prev is None or (msg.id or 0) > (prev.id or 0):
+            latest_by_chat[msg.chat_id] = msg
+
+    # Unread = messages from the partner that aren't yet read by us.
+    unread_rows = db.exec(
+        select(ChatMessage).where(
+            ChatMessage.chat_id.in_(my_chat_ids),
+            ChatMessage.from_account_id != acc.id,
+            ChatMessage.is_read == False,
+        )
+    ).all()
+    unread_by_chat: dict[int, int] = {}
+    for msg in unread_rows:
+        unread_by_chat[msg.chat_id] = unread_by_chat.get(msg.chat_id, 0) + 1
+
+    summaries: list[ConversationSummary] = []
+    for chat_id, partner in partners_by_chat.items():
+        latest = latest_by_chat.get(chat_id)
+        summaries.append(
+            ConversationSummary(
+                chat_id=chat_id,
+                partner=_public_summary(partner),
+                last_message=latest.message_text if latest else None,
+                last_message_at=latest.last_updated if latest else None,
+                unread_count=unread_by_chat.get(chat_id, 0),
+            )
+        )
+
+    summaries.sort(
+        key=lambda s: (s.last_message_at or 0).timestamp() if s.last_message_at else 0,
+        reverse=True,
+    )
+
+    return ConversationListResponse(conversations=summaries)
+
+
+@router.get("/partner/{chat_id}", response_model=PublicAccountSummary)
+def get_chat_partner(chat_id: int, db = Depends(get_session), acc: Account = Depends(get_active_account)):
+    """The other participant's public profile for a chat the caller is in."""
+    if acc is None or acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    _ensure_participant(db, chat_id, acc.id)
+    other_row = _other_participant(db, chat_id, acc.id)
+    partner = db.get(Account, other_row.account_id)
+    if partner is None:
+        raise HTTPException(404, detail="Partner account not found")
+    return _public_summary(partner)
+
+
 @router.get("/by-account/{account_id}", response_model=ChatWithAccountResponse)
 def get_or_create_chat_with_account(
     account_id: int,
