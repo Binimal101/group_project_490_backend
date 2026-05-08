@@ -52,13 +52,13 @@ def get_or_create_chat_with_account(account_id: int, db = Depends(get_session), 
     if request is None:
         raise HTTPException(404, detail="No relationship exists between these accounts")
 
-    # Find or create relationship
     relationship = db.query(ClientCoachRelationship).filter(
-        ClientCoachRelationship.request_id == request.id
+        ClientCoachRelationship.request_id == request.id,
+        ClientCoachRelationship.is_active == True,
     ).first()
 
     if relationship is None:
-        raise HTTPException(404, detail="Relationship not active")
+        raise HTTPException(404, detail="No active relationship between these accounts")
 
     # Find or create chat
     chat = db.query(Chat).filter(Chat.client_coach_relationship_id == relationship.id).first()
@@ -80,6 +80,8 @@ def _resolve_chat_recipient_account(db, chat: Chat, sender: Account) -> Account:
     relationship = db.get(ClientCoachRelationship, chat.client_coach_relationship_id)
     if relationship is None:
         raise HTTPException(404, detail="Relationship not found")
+    if not relationship.is_active:
+        raise HTTPException(403, detail="Relationship is no longer active")
 
     request = db.get(ClientCoachRequest, relationship.request_id)
     if request is None:

@@ -1,4 +1,6 @@
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, Query
+from pydantic import BaseModel
 from typing import Optional, List
 from sqlmodel import Session, select
 from sqlalchemy import func, desc, asc, delete
@@ -30,6 +32,8 @@ from src.api.roles.client.domain import (
     AssignWorkoutPlanResponse,
     PayInvoiceInput,
     PayInvoiceResponse,
+    AvailabilityResponse,
+    BusySlotResponse,
 )
 from src.api.roles.coach.domain import CoachAvailabilityResponse
 
@@ -39,10 +43,10 @@ from src.database.session import get_session
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
 from src.database.account.models import Account, Availability, Notification
-from src.database.client.models import Client, ClientAvailability, FitnessGoals, ClientWorkoutPlan
+from src.database.client.models import Client, FitnessGoals, ClientWorkoutPlan
 from src.database.telemetry.models import (
-    HealthMetrics, 
-    ClientTelemetry, 
+    HealthMetrics,
+    ClientTelemetry,
     StepCount,
     DailyMoodSurvey,
     DailyWorkoutSurvey,
@@ -62,9 +66,33 @@ from src.api.roles.client.fitness import (
 )
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan
+from src.api.roles.services import (
+    create_availability_row,
+    create_busy_for_plan,
+    create_manual_busy_slot,
+    delete_availability_row,
+    delete_busy_slot_row,
+    list_availability_for_account,
+    list_busy_slots_for_account,
+    update_availability_row,
+    validate_schedulable,
+)
 
 
 router = APIRouter(prefix="/roles/client", tags=["client"])
+
+
+class AvailabilityWindowInput(BaseModel):
+    start_dt: datetime
+    end_dt: datetime
+    repeats_weekly: bool = False
+    recurrence_end_dt: Optional[datetime] = None
+
+
+class BusySlotInput(BaseModel):
+    start_dt: datetime
+    end_dt: datetime
+    note: Optional[str] = None
 
 @router.post("/initial_survey", response_model=CreateClientResponse)
 def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_session), acc: Account = Depends(get_active_account)):
@@ -77,22 +105,14 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
     if acc.client_id is not None:
         raise HTTPException(409, detail="Client profile already exists for this account")
 
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+
     db.add(client_details.payment_information)
-    for availability in client_details.availabilities:
-        db.add(availability)
-    
     db.flush()
-
-    client_availability = ClientAvailability()
-    db.add(client_availability)
-    db.flush()
-
-    for a in client_details.availabilities:
-        a.client_availability_id = client_availability.id
 
     client = Client(
         payment_information_id=client_details.payment_information.id,
-        client_availability_id=client_availability.id,
     )
 
     db.add(client)
@@ -101,13 +121,17 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
     if client.id is None:
         raise HTTPException(500, detail="Something went wrong when adding new client")
 
+    for a in client_details.availabilities:
+        a.account_id = acc.id
+        db.add(a)
+
     telem = create_telemetry_event(db, client.id, TELEMETRY_WEIGHT, commit=False)
-    
+
     client_details.fitness_goals.client_id = client.id  # type: ignore
     db.add(client_details.fitness_goals)
 
     acc.client_id = client.id
-    
+
     db.flush()
 
     if telem.id is None:
@@ -116,7 +140,7 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
     client_details.initial_health_metric.client_telemetry_id = telem.id
 
     db.add(client_details.initial_health_metric)
-    
+
     db.commit()
 
     return CreateClientResponse(client_id=client.id) # type: ignore
@@ -126,30 +150,13 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
 @router.patch("/information", response_model=DunderResponse)
 def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
-    Availabilities: will override current availabilities (delete old records, create new ones)
     Fitness goals will override current reading
     Health metrics appends new record as client_telemetry
     Payment information is overridden
 
+    Availability is managed exclusively through /availability CRUD endpoints.
     """
     client = db.get(Client, acc.client_id)
-
-    # Availabilities: delete existing and replace with new ones
-    if payload.availabilities:
-        ca_id = client.client_availability_id
-        if ca_id is None:
-            ca = ClientAvailability()
-            db.add(ca)
-            db.flush()
-            client.client_availability_id = ca.id
-            ca_id = ca.id
-            db.add(client)
-        else:
-            db.exec(delete(Availability).where(Availability.client_availability_id == ca_id))
-
-        for a in payload.availabilities:
-            a.client_availability_id = ca_id
-            db.add(a)
 
     # Fitness goals: replace existing goals for the client
     if payload.fitness_goals:
@@ -239,30 +246,144 @@ def get_coach_availability_for_client(coach_id: int, db = Depends(get_session), 
 @router.post("/assign_plan", response_model=AssignWorkoutPlanResponse)
 def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
-    Assigns a workout plan to the authenticated client.
+    Assigns a workout plan to the authenticated client across one or more time blocks.
+    Each block becomes its own ClientWorkoutPlan row sharing the same workout_plan_id.
+    Validates every block against the account's date-based availability and any busy slots.
     """
     if acc.client_id is None:
         raise HTTPException(404, detail="Client profile not found")
+
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
 
     plan = db.get(WorkoutPlan, payload.workout_plan_id)
     if plan is None:
         raise HTTPException(404, detail="Workout plan not found")
 
-    client_workout_plan = ClientWorkoutPlan(
-        client_id=acc.client_id,
-        workout_plan_id=payload.workout_plan_id,
-        start_time=payload.start_dt,
-        end_time=payload.end_dt
-    )
-    db.add(client_workout_plan)
+    block_pairs = [(b.start_dt, b.end_dt) for b in payload.blocks]
+    created_ids = []
+    for start_dt, end_dt in block_pairs:
+        validate_schedulable(db, acc.id, start_dt, end_dt)
+        cwp = ClientWorkoutPlan(
+            client_id=acc.client_id,
+            workout_plan_id=payload.workout_plan_id,
+            start_time=start_dt,
+            end_time=end_dt,
+        )
+        db.add(cwp)
+        db.flush()
+        if cwp.id is None:
+            raise HTTPException(500, detail="Something went wrong while assigning the workout plan")
+        create_busy_for_plan(db, acc.id, cwp.id, start_dt, end_dt)
+        created_ids.append(cwp.id)
+
     db.commit()
-    db.refresh(client_workout_plan)
+    return AssignWorkoutPlanResponse(client_workout_plan_ids=created_ids)
 
-    if client_workout_plan.id is None:
-        raise HTTPException(500, detail="Something went wrong while assigning the workout plan")
 
-    return AssignWorkoutPlanResponse(client_workout_plan_id=client_workout_plan.id)
+@router.get("/availability")
+def list_client_availability(
+    from_dt: datetime,
+    to_dt: datetime,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    return list_availability_for_account(db, acc.id, from_dt, to_dt)
 
+
+@router.post("/availability", response_model=AvailabilityResponse)
+def create_client_availability(
+    payload: AvailabilityWindowInput,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    row = create_availability_row(
+        db,
+        acc.id,
+        start_dt=payload.start_dt,
+        end_dt=payload.end_dt,
+        repeats_weekly=payload.repeats_weekly,
+        recurrence_end_dt=payload.recurrence_end_dt,
+    )
+    db.commit()
+    return row
+
+
+@router.put("/availability/{availability_id}", response_model=AvailabilityResponse)
+def update_client_availability(
+    availability_id: int,
+    payload: AvailabilityWindowInput,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    row = update_availability_row(
+        db,
+        acc.id,
+        availability_id,
+        start_dt=payload.start_dt,
+        end_dt=payload.end_dt,
+        repeats_weekly=payload.repeats_weekly,
+        recurrence_end_dt=payload.recurrence_end_dt,
+    )
+    db.commit()
+    return row
+
+
+@router.delete("/availability/{availability_id}")
+def delete_client_availability(
+    availability_id: int,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    delete_availability_row(db, acc.id, availability_id)
+    db.commit()
+    return {"details": "deleted"}
+
+
+@router.get("/busy_slots")
+def list_client_busy_slots(
+    from_dt: datetime,
+    to_dt: datetime,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    return list_busy_slots_for_account(db, acc.id, from_dt, to_dt)
+
+
+@router.post("/busy_slots", response_model=BusySlotResponse)
+def create_client_busy_slot(
+    payload: BusySlotInput,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    busy_slot = create_manual_busy_slot(db, acc.id, payload.start_dt, payload.end_dt, payload.note)
+    db.commit()
+    return busy_slot
+
+
+@router.delete("/busy_slots/{busy_slot_id}")
+def delete_client_busy_slot(
+    busy_slot_id: int,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    delete_busy_slot_row(db, acc.id, busy_slot_id)
+    db.commit()
+    return {"details": "deleted"}
 
 
 @router.post("/request_coach/{coach_id}", response_model=ClientCoachRequestResponse)
@@ -330,6 +451,12 @@ def rescind_request(request_id: int, db = Depends(get_session), acc: Account = D
 
     if request.client_id != acc.client_id:
         raise HTTPException(403, detail="Not authorized to rescind this request")
+
+    if request.is_accepted is not None:
+        raise HTTPException(
+            409,
+            detail="Cannot rescind a resolved request; use terminate_relationship instead."
+        )
 
     coach_account = db.exec(select(Account).where(Account.coach_id == request.coach_id)).first()
 
@@ -677,6 +804,8 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
     if acc is None:
         raise HTTPException(404, detail="Account not found")
 
+    # is_accepted alone is insufficient — termination flips is_active only.
+    # Also exclude relationships where either side has blocked the other.
     coach_row = db.exec(
         select(ClientCoachRequest, ClientCoachRelationship)
         .join(
@@ -694,7 +823,7 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
     ).first()
 
     if coach_row is None:
-        raise HTTPException(404, detail="You do not have an accepted coach request")
+        raise HTTPException(404, detail="No active coach relationship")
 
     coach_request, relationship = coach_row
 

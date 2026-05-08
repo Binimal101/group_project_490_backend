@@ -1,6 +1,6 @@
 from decimal import Decimal
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from src.database.workouts_and_activities.models import Equiptment, WorkoutType
 from src.database.client.models import ClientWorkoutPlan
 from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
@@ -197,7 +197,7 @@ def test_client_query_plans(test_client, client_auth_header, seed_workout_activi
     assert any(p["workout_plan_id"] == workout_plan_id and p["client_id"] == client_id for p in data)
 
 
-def test_coach_can_prescribe_workout_plan_to_active_client(test_client, create_client, coach_auth_header, seed_workout_activity, db_session):
+def test_coach_can_prescribe_workout_plan_to_active_client(test_client, create_client, coach_auth_header, seed_workout_activity, db_session, seed_availability):
     plan_payload = build_create_plan_payload(workout_activity_id=seed_workout_activity)
     plan_response = test_client.post("/roles/shared/fitness/plan", json=plan_payload, headers=coach_auth_header)
     assert plan_response.status_code == 200, plan_response.text
@@ -213,15 +213,18 @@ def test_coach_can_prescribe_workout_plan_to_active_client(test_client, create_c
     db_session.flush()
     db_session.add(ClientCoachRelationship(
         request_id=request.id,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
         is_active=True,
         coach_blocked=False,
         client_blocked=False,
     ))
     db_session.commit()
 
-    start_dt = datetime.utcnow()
-    end_dt = start_dt + timedelta(days=14)
+    start_dt = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) + timedelta(days=14)
+    end_dt = start_dt + timedelta(hours=2)
+    availability_response = seed_availability(client_header, start_dt=start_dt, end_dt=end_dt)
+    assert availability_response.status_code == 200, availability_response.text
+
     prescribe_response = test_client.post(
         "/roles/coach/prescribe_plan",
         json={
@@ -266,7 +269,7 @@ def test_coach_cannot_prescribe_workout_plan_to_unrelated_client(test_client, cr
     assert response.status_code == 403
 
 
-def test_client_can_assign_workout_plan_to_self(test_client, client_auth_header, seed_workout_activity, db_session):
+def test_client_can_assign_workout_plan_to_self(test_client, client_auth_header, seed_workout_activity, db_session, seed_availability):
     plan_payload = build_create_plan_payload(workout_activity_id=seed_workout_activity)
     plan_response = test_client.post("/roles/shared/fitness/plan", json=plan_payload, headers=client_auth_header)
     assert plan_response.status_code == 200, plan_response.text
@@ -276,13 +279,17 @@ def test_client_can_assign_workout_plan_to_self(test_client, client_auth_header,
     assert me_response.status_code == 200
     client_id = me_response.json()["base_account"]["client_id"]
 
-    start_dt = datetime.utcnow()
+    start_dt = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) + timedelta(days=14)
+    end_dt = start_dt + timedelta(hours=2)
+    availability_response = seed_availability(client_auth_header, start_dt=start_dt, end_dt=end_dt)
+    assert availability_response.status_code == 200, availability_response.text
+
     assign_response = test_client.post(
         "/roles/client/assign_plan",
         json={
             "workout_plan_id": workout_plan_id,
             "start_dt": start_dt.isoformat(),
-            "end_dt": (start_dt + timedelta(days=5)).isoformat(),
+            "end_dt": end_dt.isoformat(),
         },
         headers=client_auth_header,
     )

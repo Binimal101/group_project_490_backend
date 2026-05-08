@@ -61,7 +61,7 @@ def get_full_profile(
                 if g.goal_enum
             ]
             primary_goal = fitness_goals_out[0] if fitness_goals_out else None
-            availabilities = db.exec(select(Availability).where(Availability.client_availability_id == client.client_availability_id)).all()
+            availabilities = db.exec(select(Availability).where(Availability.account_id == acc.id)).all()
 
             # Payment information (censored)
             payment_info = None
@@ -189,7 +189,7 @@ def get_full_profile(
                 .where(CoachExperience.coach_id == coach.id)
             ).all()
 
-            availabilities = db.exec(select(Availability).where(Availability.coach_availability_id == coach.coach_availability)).all()
+            availabilities = db.exec(select(Availability).where(Availability.account_id == acc.id)).all()
 
             pricing = db.exec(select(PricingPlan).where(PricingPlan.coach_id == coach.id).order_by(desc(PricingPlan.id))).first()
 

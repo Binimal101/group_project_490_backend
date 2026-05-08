@@ -9,7 +9,8 @@ from src.database.session import get_session
 from src.database.workouts_and_activities.models import WorkoutPlanActivity
 from src.database.account.models import Account
 from src.api.dependencies import get_client_account, PaginationParams
-from src.database.client.models import ClientWorkoutPlan 
+from src.database.client.models import ClientWorkoutPlan
+from src.api.roles.services import remove_busy_for_plan
 from src.database.meal.models import ClientPrescribedMeal
 from src.database.telemetry.models import (
     ClientTelemetry, 
@@ -351,6 +352,26 @@ def query_client_workout_plans(
     query = select(ClientWorkoutPlan).where(ClientWorkoutPlan.client_id == acc.client_id)
     plans = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
     return plans
+
+
+@router.delete("/client_workout_plan/{plan_id}")
+def delete_client_workout_plan(
+    plan_id: int,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.client_id is None:
+        raise HTTPException(404, detail="Client profile not found")
+
+    cwp = db.get(ClientWorkoutPlan, plan_id)
+    if cwp is None or cwp.client_id != acc.client_id:
+        raise HTTPException(404, detail="Scheduled plan not found")
+
+    if cwp.id is not None:
+        remove_busy_for_plan(db, cwp.id)
+    db.delete(cwp)
+    db.commit()
+    return {"details": "deleted"}
 
 @router.get("/daily-survey/today", response_model=DailySurveyResponse)
 def get_today_daily_survey(
