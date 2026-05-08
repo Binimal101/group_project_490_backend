@@ -35,6 +35,47 @@ class PotentialCoachItem(BaseModel):
 class AdminTransactionsResponse(BaseModel):
     total_transacted: float
 
+
+class AdminAnalyticsPoint(BaseModel):
+    """One bucket on the engagement bar chart."""
+    label: str
+    active_users: int
+    new_signups: int
+
+
+class AdminAnalyticsResponse(BaseModel):
+    """All three rollups in one payload so the dashboard can switch period
+    tabs (daily / weekly / monthly) without refetching."""
+    daily: List[AdminAnalyticsPoint]
+    weekly: List[AdminAnalyticsPoint]
+    monthly: List[AdminAnalyticsPoint]
+
+
+class AdminEngagementResponse(BaseModel):
+    """Platform-wide engagement aggregates that don't fit elsewhere.
+    Used by the admin dashboard to fill the slots formerly held by the fake
+    'this month' / 'active subscriptions' cards."""
+    active_coach_client_pairs: int
+    total_messages_sent: int
+
+
+class AdminReportItem(BaseModel):
+    """One row in the admin "Active Reports" feed.
+    `kind` distinguishes coach-on-client (filed by a coach about a client) from
+    client-on-coach (filed by a client about a coach). The id alone is not
+    unique across the two tables, so `kind` plus `id` is the real key the
+    dashboard uses for dismiss/escalate actions.
+    `reported_account_id` lets the dashboard's "Take Action" button hit
+    /roles/admin/accounts/{id}/deactivate without an extra lookup."""
+    id: int
+    kind: str  # "coach_on_client" | "client_on_coach"
+    reporter_name: str
+    reported_name: str
+    reported_account_id: Optional[int] = None
+    reason: str
+    created_at: Optional[datetime] = None
+
+
 class ResolveCoachRequestInput(BaseModel):
     coach_request_id: int
     is_approved: bool
