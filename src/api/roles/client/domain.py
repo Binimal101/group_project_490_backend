@@ -15,6 +15,7 @@ from src.database.coach_client_relationship.models import ClientCoachRequest
 
 class HirableCoachItem(BaseModel):
     coach_id: int
+    account_id: int
     name: str
     email: str
     age: Optional[int] = None

@@ -124,8 +124,6 @@ def test_coach_fetches_updated_client_availability(
         request_id=request.id,
         created_at=datetime.now(timezone.utc),
         is_active=True,
-        coach_blocked=False,
-        client_blocked=False,
     )
     db_session.add(relationship)
     db_session.commit()

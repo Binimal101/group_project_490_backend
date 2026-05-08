@@ -215,8 +215,6 @@ def test_coach_can_prescribe_workout_plan_to_active_client(test_client, create_c
         request_id=request.id,
         created_at=datetime.now(timezone.utc),
         is_active=True,
-        coach_blocked=False,
-        client_blocked=False,
     ))
     db_session.commit()
 

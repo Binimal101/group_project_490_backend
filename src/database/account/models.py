@@ -85,6 +85,15 @@ class BusySlot(SQLModelLU, table=True):
             raise HTTPException(status_code=400, detail="start_dt must be before end_dt")
         return self
 
+class AccountBlock(SQLModelLU, table=True):
+    """A blocks B. Symmetric DM gate: a block in either direction blocks sends both ways."""
+    __tablename__ = "account_block"  # type: ignore
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    blocker_id: int = Field(foreign_key="account.id", index=True, ondelete="CASCADE")
+    blockee_id: int = Field(foreign_key="account.id", index=True, ondelete="CASCADE")
+
+
 class Notification(SQLModelLU, table=True):
     __tablename__ = "notification"  # type: ignore
 

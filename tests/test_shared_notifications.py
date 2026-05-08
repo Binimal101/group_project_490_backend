@@ -9,7 +9,7 @@ from tests.payload_tools.coach import build_coach_request_payload
 from src.database.account.models import Account, Notification
 from src.database.client.models import Client
 from src.database.coach.models import Coach
-from src.database.coach_client_relationship.models import Chat, ClientCoachRequest, ClientCoachRelationship
+from src.database.coach_client_relationship.models import AccountChat, Chat, ClientCoachRequest, ClientCoachRelationship
 
 
 def _create_verified_coach(test_client, db_session, email_prefix="chatcoach"):
@@ -147,17 +147,18 @@ def test_chat_message_creates_recipient_notification(test_client, client_auth_he
         request_id=request.id,
         created_at=datetime.utcnow(),
         is_active=True,
-        coach_blocked=False,
-        client_blocked=False,
     )
     db_session.add(relationship)
     db_session.commit()
     db_session.refresh(relationship)
 
-    chat = Chat(client_coach_relationship_id=relationship.id)
+    chat = Chat()
     db_session.add(chat)
     db_session.commit()
     db_session.refresh(chat)
+    db_session.add(AccountChat(account_id=client_me["id"], chat_id=chat.id))
+    db_session.add(AccountChat(account_id=coach_me["id"], chat_id=chat.id))
+    db_session.commit()
 
     send_resp = test_client.post(
         f"/roles/shared/chat/messages/{chat.id}?message_text=Hello%20coach",

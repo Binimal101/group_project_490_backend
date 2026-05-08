@@ -59,8 +59,6 @@ def create_client_coach_relationship(db_session):
         request_id=request.id,
         created_at=datetime.utcnow(),
         is_active=True,
-        coach_blocked=False,
-        client_blocked=False,
     )
 
     db_session.add(relationship)

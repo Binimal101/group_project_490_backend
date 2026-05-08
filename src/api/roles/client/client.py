@@ -403,7 +403,14 @@ def create_coach_request(coach_id: int, db = Depends(get_session), acc: Account 
 
     if coach_account is None or not coach.verified:
         raise HTTPException(404, detail="Coach not available")
-    
+
+    if coach_account.id == acc.id:
+        raise HTTPException(400, detail="You cannot hire yourself as a coach")
+
+    from src.api.roles.shared.blocks import is_blocked_between
+    if acc.id is not None and coach_account.id is not None and is_blocked_between(db, acc.id, coach_account.id):
+        raise HTTPException(403, detail="Cannot create a coach request with a blocked account")
+
     existing_request = db.query(ClientCoachRequest).filter_by(
         client_id=client.id, coach_id=coach.id, is_accepted=None
     ).first()
@@ -628,6 +635,7 @@ def query_hirable_coaches(
     # base filters: coach must be verified and account active
     stmt = select(
         Coach.id.label("coach_id"), # type: ignore
+        Account.id.label("account_id"), # type: ignore
         Account.name.label("name"),
         Account.email.label("email"),
         Account.age.label("age"),
@@ -639,6 +647,27 @@ def query_hirable_coaches(
 
     # filters
     where_clauses = [Account.is_active == True, Coach.verified == True]
+
+    # Hide the caller's own coach role (if they're both client and coach).
+    if acc.id is not None:
+        where_clauses.append(Account.id != acc.id)
+
+    # Hide accounts the caller has blocked or that have blocked the caller.
+    from src.database.account.models import AccountBlock
+    if acc.id is not None:
+        blocker_ids = [
+            row.blocker_id for row in db.exec(
+                select(AccountBlock).where(AccountBlock.blockee_id == acc.id)
+            ).all()
+        ]
+        blockee_ids = [
+            row.blockee_id for row in db.exec(
+                select(AccountBlock).where(AccountBlock.blocker_id == acc.id)
+            ).all()
+        ]
+        excluded_account_ids = set(blocker_ids + blockee_ids)
+        if excluded_account_ids:
+            where_clauses.append(Account.id.notin_(excluded_account_ids))
 
     if name:
         where_clauses.append(func.lower(Account.name).like(f"%{name.lower()}%"))
@@ -657,7 +686,7 @@ def query_hirable_coaches(
     stmt = stmt.where(*where_clauses)
 
     # group and ordering
-    stmt = stmt.group_by(Coach.id, Account.id, Account.name, Account.email, Account.age, Account.gender, Coach.specialties)
+    stmt = stmt.group_by(Coach.id, Account.id, Account.name, Account.email, Account.age, Account.gender, Coach.specialties)  # Account.id already grouped — included in select
 
     if sort_by == "rating_count":
         order_expr = desc(func.count(CoachReviews.id)) if order == "desc" else asc(func.count(CoachReviews.id))
@@ -684,6 +713,7 @@ def query_hirable_coaches(
         result.append(
             {
                 "coach_id": r.coach_id,
+                "account_id": r.account_id,
                 "name": r.name,
                 "email": r.email,
                 "age": r.age,
@@ -813,8 +843,6 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
             ClientCoachRequest.client_id == acc.client_id,
             ClientCoachRequest.is_accepted.is_(True),
             ClientCoachRelationship.is_active.is_(True),
-            ClientCoachRelationship.client_blocked.is_(False),
-            ClientCoachRelationship.coach_blocked.is_(False),
         )
         .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
     ).first()
@@ -830,6 +858,12 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
         raise HTTPException(404, detail="Coach not found")
 
     coach_account = db.exec(select(Account).where(Account.coach_id == coach.id)).first()
+
+    # Hide the relationship if either side has blocked the other.
+    from src.api.roles.shared.blocks import is_blocked_between
+    if coach_account is not None and coach_account.id is not None and acc.id is not None:
+        if is_blocked_between(db, acc.id, coach_account.id):
+            raise HTTPException(404, detail="No active coach relationship")
 
     return {
         "coach_id": coach.id,

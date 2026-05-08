@@ -265,10 +265,12 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
     relationship = db.exec(select(ClientCoachRelationship).where(
         ClientCoachRelationship.request_id == request.id,
         ClientCoachRelationship.is_active == True,
-        ClientCoachRelationship.coach_blocked == False,
-        ClientCoachRelationship.client_blocked == False
     )).first()
     if relationship is None:
+        raise HTTPException(403, detail="Coach does not have an active relationship with this client")
+
+    from src.api.roles.shared.blocks import is_blocked_between
+    if acc.id is not None and is_blocked_between(db, acc.id, client_account.id):
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
 
     block_pairs = [(b.start_dt, b.end_dt) for b in payload.blocks]
@@ -730,7 +732,7 @@ def accept_coach_request(request_id: int, db = Depends(get_session), acc: Accoun
         )
         db.add(n)
 
-    relationship = ClientCoachRelationship(request_id=request.id, created_at=datetime.utcnow(), is_active=True, coach_blocked=False, client_blocked=False)
+    relationship = ClientCoachRelationship(request_id=request.id, created_at=datetime.utcnow(), is_active=True)
     db.add(relationship)
     db.flush()
 
@@ -896,8 +898,6 @@ def get_my_clients(
             ClientCoachRequest.coach_id == acc.coach_id,
             ClientCoachRequest.is_accepted.is_(True),
             ClientCoachRelationship.is_active.is_(True),
-            ClientCoachRelationship.client_blocked.is_(False),
-            ClientCoachRelationship.coach_blocked.is_(False),
         )
         .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
         .offset(pagination.skip)
@@ -1043,8 +1043,6 @@ def _authorize_coach_for_client(db, coach_id: int, client_id: int) -> None:
             select(ClientCoachRelationship).where(
                 ClientCoachRelationship.request_id == accepted.id,
                 ClientCoachRelationship.is_active == True,
-                ClientCoachRelationship.coach_blocked == False,
-                ClientCoachRelationship.client_blocked == False,
             )
         ).first()
         if rel:
