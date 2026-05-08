@@ -70,7 +70,7 @@ def terminate_relationship(
         db.add(Notification(
             account_id=context["other"].account.id,
             fav_category="relationship_termination",
-            message=f"Your contract with {context['other'].account.name} was terminated.",
+            message=f"Your contract with {context['user'].account.name} was terminated.",
             details=f"Relationship {relationship.id} was ended.",
         ))
     if context["user"].account and context["user"].account.id is not None:

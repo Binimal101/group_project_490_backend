@@ -117,6 +117,9 @@ class CoachRequestItem(BaseModel):
     coach_name: str
     is_accepted: Optional[bool]
     created_at: Optional[datetime]
+    status: Optional[str] = None
+    relationship_id: Optional[int] = None
+    relationship_active: Optional[bool] = None
 
 class MyCoachRequestsResponse(BaseModel):
     requests : List[CoachRequestItem]

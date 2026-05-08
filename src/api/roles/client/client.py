@@ -285,6 +285,25 @@ def create_coach_request(coach_id: int, db = Depends(get_session), acc: Account 
 
     if coach_account is None or not coach.verified:
         raise HTTPException(404, detail="Coach not available")
+
+    active_request = db.exec(
+        select(ClientCoachRequest, ClientCoachRelationship)
+        .join(
+            ClientCoachRelationship,
+            ClientCoachRelationship.request_id == ClientCoachRequest.id,
+        )
+        .where(
+            ClientCoachRequest.client_id == client.id,
+            ClientCoachRequest.coach_id == coach.id,
+            ClientCoachRequest.is_accepted.is_(True),
+            ClientCoachRelationship.is_active.is_(True),
+            ClientCoachRelationship.client_blocked.is_(False),
+            ClientCoachRelationship.coach_blocked.is_(False),
+        )
+    ).first()
+
+    if active_request:
+        raise HTTPException(409, detail="You already have an active relationship with this coach")
     
     existing_request = db.query(ClientCoachRequest).filter_by(
         client_id=client.id, coach_id=coach.id, is_accepted=None
@@ -727,18 +746,49 @@ def get_my_coach_requests(db = Depends(get_session), acc: Account = Depends(get_
     if acc is None:
         raise HTTPException(404, detail="Account not found")
 
-    requests = db.query(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).all()
+    requests = (
+        db.query(ClientCoachRequest)
+        .filter(ClientCoachRequest.client_id == acc.client_id)
+        .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
+        .all()
+    )
 
     result = []
     for req in requests:
         coach_account = db.exec(select(Account).where(Account.coach_id == req.coach_id)).first()
         coach_name = coach_account.name if coach_account else f"Coach #{req.coach_id}"
+        relationship = None
+        if req.id is not None:
+            relationship = db.exec(
+                select(ClientCoachRelationship)
+                .where(ClientCoachRelationship.request_id == req.id)
+                .order_by(ClientCoachRelationship.last_updated.desc(), ClientCoachRelationship.id.desc())
+            ).first()
+
+        relationship_is_active = bool(
+            relationship
+            and relationship.is_active
+            and not relationship.client_blocked
+            and not relationship.coach_blocked
+        )
+        if req.is_accepted is None:
+            status = "pending"
+        elif req.is_accepted is False:
+            status = "rejected"
+        elif relationship is not None and not relationship_is_active:
+            status = "terminated"
+        else:
+            status = "approved"
+
         result.append({
             "id": req.id,
             "coach_id": req.coach_id,
             "coach_name": coach_name,
             "is_accepted": req.is_accepted,
             "created_at": req.created_at,
+            "status": status,
+            "relationship_id": relationship.id if relationship else None,
+            "relationship_active": relationship_is_active if relationship else None,
         })
 
     return MyCoachRequestsResponse(requests=result)
