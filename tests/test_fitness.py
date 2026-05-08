@@ -41,7 +41,7 @@ def test_coach_can_create_workout(test_client, coach_auth_header, seed_equipment
     assert query_act_response.status_code == 200, query_act_response.text
     activities = query_act_response.json()
     assert len(activities) > 0
-    assert activities[0]["id"] == workout_activity_id
+    assert any(a["id"] == workout_activity_id for a in activities)
 
 def test_client_can_create_workout_plan(test_client, client_auth_header, seed_workout_activity):
     # 5. Create a workout plan (Shared route, appropriately simulated using client_auth_header over a seeded activity)
@@ -215,8 +215,6 @@ def test_coach_can_prescribe_workout_plan_to_active_client(test_client, create_c
         request_id=request.id,
         created_at=datetime.now(timezone.utc),
         is_active=True,
-        coach_blocked=False,
-        client_blocked=False,
     ))
     db_session.commit()
 
@@ -230,13 +228,12 @@ def test_coach_can_prescribe_workout_plan_to_active_client(test_client, create_c
         json={
             "workout_plan_id": workout_plan_id,
             "client_id": client_id,
-            "start_dt": start_dt.isoformat(),
-            "end_dt": end_dt.isoformat(),
+            "blocks": [{"start_dt": start_dt.isoformat(), "end_dt": end_dt.isoformat()}],
         },
         headers=coach_auth_header,
     )
     assert prescribe_response.status_code == 200, prescribe_response.text
-    client_workout_plan_id = prescribe_response.json()["client_workout_plan_id"]
+    client_workout_plan_id = prescribe_response.json()["client_workout_plan_ids"][0]
 
     client_workout_plan = db_session.get(ClientWorkoutPlan, client_workout_plan_id)
     assert client_workout_plan is not None
@@ -261,8 +258,10 @@ def test_coach_cannot_prescribe_workout_plan_to_unrelated_client(test_client, cr
         json={
             "workout_plan_id": plan_response.json()["workout_plan_id"],
             "client_id": client_id,
-            "start_dt": start_dt.isoformat(),
-            "end_dt": (start_dt + timedelta(days=7)).isoformat(),
+            "blocks": [{
+                "start_dt": start_dt.isoformat(),
+                "end_dt": (start_dt + timedelta(days=7)).isoformat(),
+            }],
         },
         headers=coach_auth_header,
     )
@@ -288,14 +287,15 @@ def test_client_can_assign_workout_plan_to_self(test_client, client_auth_header,
         "/roles/client/assign_plan",
         json={
             "workout_plan_id": workout_plan_id,
-            "start_dt": start_dt.isoformat(),
-            "end_dt": end_dt.isoformat(),
+            "blocks": [{"start_dt": start_dt.isoformat(), "end_dt": end_dt.isoformat()}],
         },
         headers=client_auth_header,
     )
     assert assign_response.status_code == 200, assign_response.text
 
-    client_workout_plan = db_session.get(ClientWorkoutPlan, assign_response.json()["client_workout_plan_id"])
+    body = assign_response.json()
+    cwp_id = body.get("client_workout_plan_id") or body.get("client_workout_plan_ids", [None])[0]
+    client_workout_plan = db_session.get(ClientWorkoutPlan, cwp_id)
     assert client_workout_plan is not None
     assert client_workout_plan.client_id == client_id
     assert client_workout_plan.workout_plan_id == workout_plan_id

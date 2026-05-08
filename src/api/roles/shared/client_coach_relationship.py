@@ -36,11 +36,11 @@ def delete_coach_request(
         )
 
     if context["other"].is_coach:
-        message = "An incoming coach request was rescinded."
-        details = f"Request {request.id} was rescinded from potential client."
+        message = f"{context['user'].account.name} has withdrawn their coaching request."
+        details = "No further action is needed on your end."
     elif context["other"].is_client:
-        message = f"Your request to hire coach {context['other'].account.name} was rejected."
-        details = f"Request {request.id} was rejected by coach."
+        message = f"Your request to hire {context['user'].account.name} was rejected."
+        details = "You may submit a new request to another coach."
 
     n = Notification(
         account_id=context["other"].account.id,
@@ -79,15 +79,15 @@ def terminate_relationship(
         db.add(Notification(
             account_id=context["other"].account.id,
             fav_category="relationship_termination",
-            message=f"Your contract with {context['other'].account.name} was terminated.",
-            details=f"Relationship {relationship.id} was ended.",
+            message=f"Your contract with {context['user'].account.name} has been terminated.",
+            details="Your coaching relationship has ended. Any active subscriptions have been cancelled.",
         ))
     if context["user"].account and context["user"].account.id is not None:
         db.add(Notification(
             account_id=context["user"].account.id,
             fav_category="relationship_termination",
             message=f"You ended the contract with {context['other'].account.name}.",
-            details=f"Relationship {relationship.id} was ended.",
+            details="Your coaching relationship has ended. Any active subscriptions have been cancelled.",
         ))
     
     relationship.is_active = False
