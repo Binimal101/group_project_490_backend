@@ -18,7 +18,6 @@ from src.api.roles.coach.domain import (
     UpdateCoachInfoInput,
     WorkoutInput,
     WorkoutActivityInput,
-    CoachAvailabilityResponse,
     CreateCoachRequestResponse,
     UpdateCoachInfoResponse,
     CoachRequestDeniedResponse,
@@ -47,17 +46,23 @@ from src.database.telemetry.models import (
     StepCount, CompletedSurvey, DailyMoodSurvey,
     CompletedWorkout, CompletedMealActivity, DailyProgressPicture,
 )
-from src.database.coach.models import Coach, CoachCertifications, CoachExperience, CoachAvailability, Experience, Certifications
+from src.database.coach.models import Coach, CoachCertifications, CoachExperience, Experience, Certifications
 from src.database.client.models import Client, FitnessGoals, ClientWorkoutPlan
 from src.database.role_management.models import CoachRequest
 from src.database.reports.models import ClientReport
 from src.api.roles.services import (
+    create_availability_row,
     create_busy_for_plan,
+    create_manual_busy_slot,
+    delete_availability_row,
+    delete_busy_slot_row,
     list_availability_for_account,
     list_busy_slots_for_account,
     remove_busy_for_plan,
+    update_availability_row,
     validate_schedulable,
 )
+from src.api.roles.client.domain import AvailabilityResponse, BusySlotResponse
 
 from sqlmodel import func
 
@@ -91,9 +96,8 @@ def create_coach_request(coach_details: CoachRequestInput, db = Depends(get_sess
         raise HTTPException(409, detail="Cannot create a request for a coach role when one is open, or the role is given")
     
     coach = Coach()
-    
+
     db.add(coach)
-    db.add(coach_availability := CoachAvailability())
 
     # attatch coach qualifications
     if coach_details.certifications is not None:
@@ -106,8 +110,10 @@ def create_coach_request(coach_details: CoachRequestInput, db = Depends(get_sess
 
     db.flush() # runs in db, now coach, c, and e have ids
 
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
     for a in coach_details.availabilities:
-        a.coach_availability_id = coach_availability.id
+        a.account_id = acc.id
         db.add(a)
 
     if coach_details.certifications is not None:
@@ -145,14 +151,7 @@ def update_coach_info(new_coach_details: UpdateCoachInfoInput, db = Depends(get_
     
     coach = db.get(Coach, coach_acc.coach_id)
 
-    # coach.coach_availability already stores the id; avoid an extra query
-    coach_availability_id = coach.coach_availability
-    if new_coach_details.availabilities is not None:
-        if coach_availability_id is not None:
-            db.exec(delete(Availability).where(Availability.coach_availability_id == coach_availability_id))
-        for a in new_coach_details.availabilities:
-            a.coach_availability_id = coach_availability_id # type: ignore
-            db.add(a)
+    # Availability is managed exclusively through /availability CRUD endpoints
 
     if new_coach_details.certifications is not None:
         db.exec(delete(CoachCertifications).where(CoachCertifications.coach_id == coach.id))
@@ -391,24 +390,137 @@ def delete_prescribed_plan(plan_id: int, db = Depends(get_session), acc: Account
     return {"details": "deleted"}
 
 
-@router.get("/coach_availability/{coach_id}", response_model=CoachAvailabilityResponse)
-def get_coach_availability(coach_id: int, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+@router.get("/coach_availability/{coach_id}")
+def get_coach_availability(
+    coach_id: int,
+    from_dt: datetime,
+    to_dt: datetime,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
     """
-    Gets coach availability for a given coach
+    Gets a coach's availability windows over the requested range.
     """
     if acc.client_id is None:
         raise HTTPException(404, detail="Please log in to view coach availability")
-    
+
     coach = db.get(Coach, coach_id)
     if coach is None:
         raise HTTPException(404, detail="Coach not found")
-    
+
     if coach.verified == False:
         raise HTTPException(404, detail="Coach is not verified yet, availability is not viewable")
-    
-    availabilities = db.exec(select(Availability).where(Availability.coach_availability_id == coach.coach_availability)).all()
 
-    return CoachAvailabilityResponse(coach_availabilities=availabilities)
+    coach_account = db.exec(select(Account).where(Account.coach_id == coach.id)).first()
+    if coach_account is None or coach_account.id is None:
+        raise HTTPException(404, detail="Coach account not found")
+
+    return list_availability_for_account(db, coach_account.id, from_dt, to_dt)
+
+
+@router.get("/availability")
+def list_self_availability(
+    from_dt: datetime,
+    to_dt: datetime,
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    return list_availability_for_account(db, acc.id, from_dt, to_dt)
+
+
+@router.post("/availability", response_model=AvailabilityResponse)
+def create_self_availability(
+    payload: AvailabilityWindowInput,
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    row = create_availability_row(
+        db,
+        acc.id,
+        start_dt=payload.start_dt,
+        end_dt=payload.end_dt,
+        repeats_weekly=payload.repeats_weekly,
+        recurrence_end_dt=payload.recurrence_end_dt,
+    )
+    db.commit()
+    return row
+
+
+@router.put("/availability/{availability_id}", response_model=AvailabilityResponse)
+def update_self_availability(
+    availability_id: int,
+    payload: AvailabilityWindowInput,
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    row = update_availability_row(
+        db,
+        acc.id,
+        availability_id,
+        start_dt=payload.start_dt,
+        end_dt=payload.end_dt,
+        repeats_weekly=payload.repeats_weekly,
+        recurrence_end_dt=payload.recurrence_end_dt,
+    )
+    db.commit()
+    return row
+
+
+@router.delete("/availability/{availability_id}")
+def delete_self_availability(
+    availability_id: int,
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    delete_availability_row(db, acc.id, availability_id)
+    db.commit()
+    return {"details": "deleted"}
+
+
+@router.get("/busy_slots")
+def list_self_busy_slots(
+    from_dt: datetime,
+    to_dt: datetime,
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    return list_busy_slots_for_account(db, acc.id, from_dt, to_dt)
+
+
+@router.post("/busy_slots", response_model=BusySlotResponse)
+def create_self_busy_slot(
+    payload: BusySlotInput,
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    busy_slot = create_manual_busy_slot(db, acc.id, payload.start_dt, payload.end_dt, payload.note)
+    db.commit()
+    return busy_slot
+
+
+@router.delete("/busy_slots/{busy_slot_id}")
+def delete_self_busy_slot(
+    busy_slot_id: int,
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    delete_busy_slot_row(db, acc.id, busy_slot_id)
+    db.commit()
+    return {"details": "deleted"}
 
 @router.get("/client_requests")
 def get_client_requests(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
@@ -559,8 +671,8 @@ def lookup_client(client_id: int, db = Depends(get_session), acc: Account = Depe
     client = db.get(Client, client_id)
 
     availabilities = []
-    if client and client.client_availability_id:
-        availabilities = db.exec(select(Availability).where(Availability.client_availability_id == client.client_availability_id)).all()
+    if account and account.id is not None:
+        availabilities = db.exec(select(Availability).where(Availability.account_id == account.id)).all()
 
     fitness_goals = db.exec(select(FitnessGoals).where(FitnessGoals.client_id == client_id)).all()
 
@@ -998,17 +1110,12 @@ def get_client_availability(
         raise HTTPException(404, detail="No coach profile found for this account")
     _authorize_coach_for_client(db, acc.coach_id, client_id)
 
-    client = db.get(Client, client_id)
-    if client is None:
+    client_account = db.exec(select(Account).where(Account.client_id == client_id)).first()
+    if client_account is None or client_account.id is None:
         raise HTTPException(404, detail="Client not found")
 
-    if client.client_availability_id is None:
-        return []
-
     return db.exec(
-        select(Availability).where(
-            Availability.client_availability_id == client.client_availability_id
-        )
+        select(Availability).where(Availability.account_id == client_account.id)
     ).all()
 
 

@@ -40,8 +40,8 @@ from src.api.roles.shared.domain import DeleteRequestResponse
 from src.database.session import get_session
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
-from src.database.account.models import Account, Availability, Notification
-from src.database.client.models import Client, ClientAvailability, FitnessGoals, ClientWorkoutPlan
+from src.database.account.models import Account, Notification
+from src.database.client.models import Client, FitnessGoals, ClientWorkoutPlan
 from src.database.workouts_and_activities.models import WorkoutPlan
 from src.database.telemetry.models import HealthMetrics, ClientTelemetry, DailyProgressPicture
 from src.api.roles.client.fitness import (
@@ -91,22 +91,14 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
     if acc.client_id is not None:
         raise HTTPException(409, detail="Client profile already exists for this account")
 
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+
     db.add(client_details.payment_information)
-    for availability in client_details.availabilities:
-        db.add(availability)
-    
     db.flush()
-
-    client_availability = ClientAvailability()
-    db.add(client_availability)
-    db.flush()
-
-    for a in client_details.availabilities:
-        a.client_availability_id = client_availability.id
 
     client = Client(
         payment_information_id=client_details.payment_information.id,
-        client_availability_id=client_availability.id,
     )
 
     db.add(client)
@@ -115,13 +107,17 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
     if client.id is None:
         raise HTTPException(500, detail="Something went wrong when adding new client")
 
+    for a in client_details.availabilities:
+        a.account_id = acc.id
+        db.add(a)
+
     telem = create_telemetry_event(db, client.id, TELEMETRY_WEIGHT, commit=False)
-    
+
     client_details.fitness_goals.client_id = client.id  # type: ignore
     db.add(client_details.fitness_goals)
 
     acc.client_id = client.id
-    
+
     db.flush()
 
     if telem.id is None:
@@ -130,7 +126,7 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
     client_details.initial_health_metric.client_telemetry_id = telem.id
 
     db.add(client_details.initial_health_metric)
-    
+
     db.commit()
 
     return CreateClientResponse(client_id=client.id) # type: ignore
@@ -140,29 +136,13 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
 @router.patch("/information", response_model=DunderResponse)
 def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
-    Availabilities: will override current availabilities (delete old records, create new ones)
     Fitness goals will override current reading
     Health metrics appends new record as client_telemetry
     Payment information is overridden
 
+    Availability is managed exclusively through /availability CRUD endpoints.
     """
     client = db.get(Client, acc.client_id)
-
-    # Availabilities: delete existing and replace with new ones
-    if payload.availabilities:
-        ca_id = client.client_availability_id
-        if ca_id is None:
-            ca = ClientAvailability()
-            db.add(ca)
-            db.flush()
-            client.client_availability_id = ca.id
-            ca_id = ca.id
-        else:
-            db.exec(delete(Availability).where(Availability.client_availability_id == ca_id))
-
-        for a in payload.availabilities:
-            a.client_availability_id = ca_id
-            db.add(a)
 
     # Fitness goals: replace existing goals for the client
     if payload.fitness_goals:

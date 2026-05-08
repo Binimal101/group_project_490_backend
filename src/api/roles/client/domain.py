@@ -87,19 +87,17 @@ class InitialSurveyInput(BaseModel): #creates a client
 class UpdateClientInfoInput(BaseModel):
     fitness_goals: Optional[FitnessGoals] = Field(default=None) #reset fitness goals
     payment_information: Optional[PaymentInformation] = Field(default=None) #reset pmt info
-    availabilities: Optional[List[Availability]] = Field(default=None) #new availabilities
     health_metrics: Optional[HealthMetrics] = Field(default=None)
 
     @model_validator(mode="after") #runs after model is validated from typing standards
     def ensure_not_empty(self):
         if not any((
-            self.fitness_goals, 
-            self.payment_information, 
-            self.availabilities,
+            self.fitness_goals,
+            self.payment_information,
             self.health_metrics
         )):
             raise HTTPException(422, detail="Cannot update with no update parameters")
-        
+
         return self #return the "safe" validated model, which is just itself (no need to cast / do anything else)
 
 class ScheduleBlock(BaseModel):
@@ -202,17 +200,12 @@ class PayInvoiceResponse(BaseModel):
 
 class AvailabilityResponse(BaseModel):
     id: Optional[int]
-    account_id: Optional[int]
-    start_dt: Optional[datetime]
-    end_dt: Optional[datetime]
+    account_id: int
+    start_dt: datetime
+    end_dt: datetime
     repeats_weekly: bool
     recurrence_end_dt: Optional[datetime]
-    weekday: Optional[str]
-    start_time: Optional[str]
-    end_time: Optional[str]
     max_time_commitment_seconds: Optional[float]
-    client_availability_id: Optional[int]
-    coach_availability_id: Optional[int]
 
 class BusySlotResponse(BaseModel):
     id: Optional[int]

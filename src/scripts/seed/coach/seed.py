@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +11,24 @@ from sqlalchemy import text
 from sqlmodel import create_engine
 
 from src.api.auth.services import hash_password
-from src.database.account.models import Weekday
+
+
+_WEEKDAY_INDEX = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+
+def _anchor_for_weekday(weekday_name: str) -> date:
+    today = date.today()
+    target = _WEEKDAY_INDEX[weekday_name.lower()]
+    delta = (target - today.weekday()) % 7
+    return today + timedelta(days=delta)
 
 
 def choose_env() -> str:
@@ -197,22 +214,25 @@ def insert_coach_availability(conn: Any) -> int:
     return conn.execute(text("INSERT INTO coach_availability (last_updated) VALUES (:last_updated) RETURNING id"), {"last_updated": now}).scalar()
 
 
-def create_availabilities(conn: Any, coach_availability_id: int, availabilities: list[dict]) -> int:
+def create_availabilities(conn: Any, account_id: int, availabilities: list[dict]) -> int:
     inserted = 0
     for avail in availabilities:
         now = datetime.now(timezone.utc)
-        weekday_value = Weekday(avail["weekday"]).name
+        anchor = _anchor_for_weekday(avail["weekday"])
+        start_time = parse_time(avail["start_time"])
+        end_time = parse_time(avail["end_time"])
+        start_dt = datetime.combine(anchor, start_time, tzinfo=timezone.utc)
+        end_dt = datetime.combine(anchor, end_time, tzinfo=timezone.utc)
         conn.execute(
             text(
-                "INSERT INTO availability (weekday, start_time, end_time, max_time_commitment_seconds, coach_availability_id, last_updated) "
-                "VALUES (:weekday, :start_time, :end_time, :max_commitment, :coach_availability_id, :last_updated)"
+                "INSERT INTO availability (account_id, start_dt, end_dt, repeats_weekly, max_time_commitment_seconds, last_updated) "
+                "VALUES (:account_id, :start_dt, :end_dt, TRUE, :max_commitment, :last_updated)"
             ),
             {
-                "weekday": weekday_value,
-                "start_time": parse_time(avail["start_time"]),
-                "end_time": parse_time(avail["end_time"]),
+                "account_id": account_id,
+                "start_dt": start_dt,
+                "end_dt": end_dt,
                 "max_commitment": avail.get("max_time_commitment_seconds"),
-                "coach_availability_id": coach_availability_id,
                 "last_updated": now,
             },
         )
@@ -344,7 +364,7 @@ def main() -> None:
             conn.execute(text("UPDATE account SET coach_id = :coach_id WHERE id = :account_id"), {"coach_id": coach_id, "account_id": account_id})
             conn.execute(text("UPDATE coach SET coach_availability = :availability_id WHERE id = :coach_id"), {"availability_id": coach_availability_id, "coach_id": coach_id})
 
-            inserted_availabilities += create_availabilities(conn, coach_availability_id, coach_details.get("availabilities", []))
+            inserted_availabilities += create_availabilities(conn, account_id, coach_details.get("availabilities", []))
 
             for cert in coach_details.get("certifications", []):
                 cert_id = get_or_create_certification(conn, cert)

@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 #Coach
 from src.database.coach.models import Experience, Certifications, Coach
-from src.database.account.models import Availability, Account, Weekday
+from src.database.account.models import Availability, Account
 from src.database.payment.models import PricingInterval
 from src.database.workouts_and_activities.models import Equiptment, WorkoutPlanActivity, WorkoutType
 from src.database.client.models import Client, FitnessGoals
@@ -79,7 +79,6 @@ class PricingPlanInput(BaseModel):
         return v
 
 class UpdateCoachInfoInput(BaseModel):
-    availabilities: Optional[List[Availability]] = Field(default=None)
     experiences: Optional[List[Experience]] = Field(default=None)
     certifications: Optional[List[Certifications]] = Field(default=None)
     specialties: Optional[List[str]] = Field(default=None)
@@ -87,18 +86,6 @@ class UpdateCoachInfoInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_nested(self):
-        if self.availabilities is not None:
-            validated_avails = []
-            for a in self.availabilities:
-                if isinstance(a, dict):
-                    validated_avails.append(Availability.model_validate(a))
-                else:
-                    try:
-                        validated_avails.append(Availability.model_validate(a.model_dump()))
-                    except Exception:
-                        validated_avails.append(Availability.model_validate(a))
-            self.availabilities = validated_avails
-
         if self.experiences is not None:
             validated_exps = []
             for e in self.experiences:

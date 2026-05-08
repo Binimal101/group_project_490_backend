@@ -68,9 +68,11 @@ class CreateWorkoutPlanResponse(BaseModel):
 class AvailabilityResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
-    weekday: str
-    start_time: time
-    end_time: time
+    account_id: int
+    start_dt: datetime
+    end_dt: datetime
+    repeats_weekly: bool
+    recurrence_end_dt: Optional[datetime] = None
     max_time_commitment_seconds: Optional[Decimal] = None
 
 
