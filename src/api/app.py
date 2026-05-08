@@ -11,7 +11,7 @@ from src.database.session import get_session
 from src.database.account.models import Account, Notification
 
 # payment models
-from src.database.payment.models import Subscription, BillingCycle, Invoice, PricingPlan, PricingInterval
+from src.database.payment.models import Subscription, BillingCycle, Invoice, PricingPlan, PricingInterval, SubscriptionStatus
 from src.api.auth.services import serialize_account
 
 #Routers
@@ -79,7 +79,9 @@ def refresh_payments(payload: dict = Body(...), db = Depends(get_session)):
     if provided != expected:
         raise HTTPException(status_code=403, detail="Invalid cron secret")
 
-    subs = db.exec(select(Subscription)).all()
+    subs = db.exec(
+        select(Subscription).where(Subscription.status == SubscriptionStatus.ACTIVE)
+    ).all()
 
     for s in subs:
         # skip subscriptions without a pricing plan

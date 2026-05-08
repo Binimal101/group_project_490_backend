@@ -5,7 +5,7 @@ from src.database.session import get_session
 from src.database.account.models import Account, Availability, Notification
 from src.database.client.models import Client, FitnessGoals
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
-from src.database.payment.models import PricingPlan, PaymentInformation, Subscription, BillingCycle, Invoice
+from src.database.payment.models import PricingPlan, PaymentInformation, Subscription, BillingCycle, Invoice, SubscriptionStatus
 from src.database.telemetry.models import (
     HealthMetrics, ClientTelemetry, DailyProgressPicture,
     CompletedMealActivity, CompletedWorkout,
@@ -32,7 +32,7 @@ from sqlmodel import Session, select, desc, func
 from sqlalchemy import or_
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
-from datetime import datetime
+from datetime import date, datetime
 
 router = APIRouter(prefix="/roles/shared/account", tags=["shared", "account"])
 
@@ -361,14 +361,8 @@ def notify_affected_accounts(
     """
     Creates notification records for accounts affected by a user's deactivation.
     """
-    role = "account"
-    if deactivated_account.client_id is not None:
-        role = "client"
-    elif deactivated_account.coach_id is not None:
-        role = "coach"
-
     message = f"{deactivated_account.name} has deactivated their account."
-    details = f"{role.capitalize()} account {deactivated_account.id} was deactivated."
+    details = "Subscription canceled"
 
     for affected_account in affected_accounts:
         if affected_account.id is None:
@@ -385,6 +379,34 @@ def notify_affected_accounts(
         )
 
 
+def cancel_payments_for_request(db: Session, request: ClientCoachRequest):
+    subscriptions = db.exec(
+        select(Subscription)
+        .join(PricingPlan, Subscription.pricing_plan_id == PricingPlan.id)
+        .where(
+            Subscription.client_id == request.client_id,
+            PricingPlan.coach_id == request.coach_id,
+            Subscription.status == SubscriptionStatus.ACTIVE,
+        )
+    ).all()
+
+    for subscription in subscriptions:
+        subscription.status = SubscriptionStatus.CANCELED
+        subscription.canceled_at = date.today()
+        db.add(subscription)
+
+        active_cycles = db.exec(
+            select(BillingCycle).where(
+                BillingCycle.subscription_id == subscription.id,
+                BillingCycle.active == True,
+            )
+        ).all()
+
+        for cycle in active_cycles:
+            cycle.active = False
+            db.add(cycle)
+
+
 def delete_client_coach_mappings(db: Session, account: Account):
     if account.client_id is not None:
         requests = db.exec(
@@ -393,6 +415,8 @@ def delete_client_coach_mappings(db: Session, account: Account):
         ).all()
 
         for request in requests:
+            cancel_payments_for_request(db, request)
+
             relationships = db.exec(
                 select(ClientCoachRelationship)
                 .where(ClientCoachRelationship.request_id == request.id)
@@ -410,6 +434,8 @@ def delete_client_coach_mappings(db: Session, account: Account):
         ).all()
 
         for request in requests:
+            cancel_payments_for_request(db, request)
+
             relationships = db.exec(
                 select(ClientCoachRelationship)
                 .where(ClientCoachRelationship.request_id == request.id)

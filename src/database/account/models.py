@@ -57,6 +57,8 @@ class Availability(SQLModelLU, table=True):
 
     @model_validator(mode="after")
     def validate_time(self):
+        if self.start_dt is None or self.end_dt is None:
+            return self
         if self.start_dt >= self.end_dt:
             raise HTTPException(status_code=400, detail="start_dt must be before end_dt")
         if self.recurrence_end_dt is not None and self.recurrence_end_dt < self.end_dt:
