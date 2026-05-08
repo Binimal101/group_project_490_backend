@@ -848,7 +848,7 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
     ).first()
 
     if coach_row is None:
-        raise HTTPException(404, detail="No active coach relationship")
+        return {"coach": None}
 
     coach_request, relationship = coach_row
 
@@ -863,7 +863,7 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
     from src.api.roles.shared.blocks import is_blocked_between
     if coach_account is not None and coach_account.id is not None and acc.id is not None:
         if is_blocked_between(db, acc.id, coach_account.id):
-            raise HTTPException(404, detail="No active coach relationship")
+            return {"coach": None}
 
     return {
         "coach_id": coach.id,

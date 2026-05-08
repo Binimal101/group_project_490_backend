@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from src.api.dependencies import get_active_account, PaginationParams
 from src.database.session import get_session
 
-from src.database.account.models import Account, AccountBlock, Notification
+from src.database.account.models import Account, AccountBlock
 from src.database.coach_client_relationship.models import (
     AccountChat,
     Chat,
@@ -252,15 +252,6 @@ def send_message(
     db.add(new_message)
     db.flush()
 
-    db.add(
-        Notification(
-            account_id=recipient_row.account_id,
-            fav_category="chat_message",
-            message=f"New message from {acc.name}",
-            details=message_text,
-        )
-    )
-
     db.commit()
 
     if new_message.id is None:
@@ -298,6 +289,54 @@ def get_messages(
     ).all()
 
     return GetMessagesResponse(messages=messages)
+
+
+@router.post("/messages/{chat_id}/read")
+def mark_messages_read(
+    chat_id: int,
+    db = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """Mark all messages in a chat as read for the calling account."""
+    if acc is None or acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    _ensure_participant(db, chat_id, acc.id)
+    unread = db.exec(
+        select(ChatMessage).where(
+            ChatMessage.chat_id == chat_id,
+            ChatMessage.from_account_id != acc.id,
+            ChatMessage.is_read == False,
+        )
+    ).all()
+    for msg in unread:
+        msg.is_read = True
+    db.commit()
+    return {"marked_read": len(unread)}
+
+
+@router.get("/unread_count")
+def get_unread_count(
+    db = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """Total number of unread messages across all chats the caller participates in."""
+    if acc is None or acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    my_chat_ids = [
+        row.chat_id for row in db.exec(
+            select(AccountChat).where(AccountChat.account_id == acc.id)
+        ).all()
+    ]
+    if not my_chat_ids:
+        return {"total_unread": 0}
+    count = len(db.exec(
+        select(ChatMessage).where(
+            ChatMessage.chat_id.in_(my_chat_ids),
+            ChatMessage.from_account_id != acc.id,
+            ChatMessage.is_read == False,
+        )
+    ).all())
+    return {"total_unread": count}
 
 
 # Lazy import to avoid sqlalchemy func import at module top.
