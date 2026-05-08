@@ -47,10 +47,10 @@ def test_payment_flows_e2e(test_client, create_client, coach_auth_header, admin_
     assert earnings_resp.status_code == 200
     assert earnings_resp.json()["total_earnings"] == 0.0
 
-    # 6. Check Admin Transactions (should be 0)
-    admin_resp = test_client.get("/roles/admin/total_transactions", headers=admin_auth_header)
-    assert admin_resp.status_code == 200
-    assert admin_resp.json()["total_transacted"] == 0.0
+    # 6. Snapshot Admin Transactions before payment (global total may be non-zero from other tests)
+    admin_resp_before = test_client.get("/roles/admin/total_transactions", headers=admin_auth_header)
+    assert admin_resp_before.status_code == 200
+    total_before = admin_resp_before.json()["total_transacted"]
 
     # 7. Run /refresh_payments cron job to simulate payment
     os.environ["CRON_SECRET"] = "test-cron-secret"
@@ -62,13 +62,13 @@ def test_payment_flows_e2e(test_client, create_client, coach_auth_header, admin_
     assert invoices_resp_after.status_code == 200
     assert invoices_resp_after.json()["invoices"][0]["outstanding_balance"] == 0.0
 
-    # 9. Check Coach Earnings again (should be 50.00 since 5000 cents / 100)
+    # 9. Check Coach Earnings again (should be 60.00)
     earnings_resp_after = test_client.get("/roles/coach/earnings", headers=coach_auth_header)
     assert earnings_resp_after.status_code == 200
-    
     assert abs(earnings_resp_after.json()["total_earnings"] - 60.0) < 0.1
 
-    # 10. Check Admin Transactions again
+    # 10. Check Admin Transactions delta (global total should increase by ~60 for this test's payment)
     admin_resp_after = test_client.get("/roles/admin/total_transactions", headers=admin_auth_header)
     assert admin_resp_after.status_code == 200
-    assert abs(admin_resp_after.json()["total_transacted"] - 60.0) < 0.1
+    delta = admin_resp_after.json()["total_transacted"] - total_before
+    assert abs(delta - 60.0) < 0.1

@@ -142,10 +142,6 @@ def create_coach_request(coach_details: CoachRequestInput, db = Depends(get_sess
     db.add(pricing_plan)
     db.flush()
 
-    # Persist the linkage from coach -> coach_availability so availability lookups work
-    coach.coach_availability = coach_availability.id
-    db.add(coach)
-
     db.commit()
 
     return CreateCoachRequestResponse(coach_request_id=cr.id, coach_id=coach.id) # type: ignore
@@ -269,10 +265,12 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
     relationship = db.exec(select(ClientCoachRelationship).where(
         ClientCoachRelationship.request_id == request.id,
         ClientCoachRelationship.is_active == True,
-        ClientCoachRelationship.coach_blocked == False,
-        ClientCoachRelationship.client_blocked == False
     )).first()
     if relationship is None:
+        raise HTTPException(403, detail="Coach does not have an active relationship with this client")
+
+    from src.api.roles.shared.blocks import is_blocked_between
+    if acc.id is not None and is_blocked_between(db, acc.id, client_account.id):
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
 
     block_pairs = [(b.start_dt, b.end_dt) for b in payload.blocks]
@@ -297,7 +295,7 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
             account_id=client_account.id,
             fav_category="workout_plan",
             message=f"{acc.name} prescribed a new workout plan.",
-            details=f"Workout plan {payload.workout_plan_id} scheduled across {len(block_pairs)} block(s).",
+            details=f"A new workout plan has been scheduled across {len(block_pairs)} session(s). Check your schedule for details.",
         ))
 
     db.commit()
@@ -729,12 +727,12 @@ def accept_coach_request(request_id: int, db = Depends(get_session), acc: Accoun
         n = Notification(
             account_id=client_account.id,
             fav_category="relationship",
-            message="Your request to hire a coach was accepted.",
-            details=f"Request {request.id} was accepted and relationship will be created.",
+            message=f"Your request to hire {acc.name} was accepted.",
+            details="Your coaching relationship is now active. Expect a billing invoice shortly.",
         )
         db.add(n)
 
-    relationship = ClientCoachRelationship(request_id=request.id, created_at=datetime.utcnow(), is_active=True, coach_blocked=False, client_blocked=False)
+    relationship = ClientCoachRelationship(request_id=request.id, created_at=datetime.utcnow(), is_active=True)
     db.add(relationship)
     db.flush()
 
@@ -764,9 +762,9 @@ def accept_coach_request(request_id: int, db = Depends(get_session), acc: Accoun
     client_account = db.exec(select(Account).where(Account.client_id == request.client_id)).first()
     coach_account = db.exec(select(Account).where(Account.coach_id == request.coach_id)).first()
     if client_account and client_account.id is not None:
-        db.add(Notification(account_id=client_account.id, fav_category="payment", message=f"A new invoice of ${amount:.2f} was issued.", details=f"Invoice {invoice.id} for billing cycle {billing_cycle.id}."))
+        db.add(Notification(account_id=client_account.id, fav_category="payment", message=f"A new invoice of ${amount:.2f} was issued.", details=f"This covers your coaching plan from {billing_cycle.entry_date} to {billing_cycle.end_date}."))
     if coach_account and coach_account.id is not None:
-        db.add(Notification(account_id=coach_account.id, fav_category="payment", message=f"Your client was invoiced ${amount:.2f}.", details=f"Invoice {invoice.id} for client {request.client_id}."))
+        db.add(Notification(account_id=coach_account.id, fav_category="payment", message=f"{client_account.name} was invoiced ${amount:.2f}.", details=f"This covers the coaching plan from {billing_cycle.entry_date} to {billing_cycle.end_date}."))
 
     db.commit()
 
@@ -798,8 +796,8 @@ def deny_client_request(request_id: int, db = Depends(get_session), acc: Account
         n = Notification(
             account_id=client_account.id,
             fav_category="relationship_request_denied",
-            message=f"Your request to hire coach {acc.name} was rejected.",
-            details=f"Request {request.id} was rejected by the coach.",
+            message=f"Your request to hire {acc.name} was not accepted.",
+            details="You may submit a new request to another coach.",
         )
         db.add(n)
 
@@ -900,8 +898,6 @@ def get_my_clients(
             ClientCoachRequest.coach_id == acc.coach_id,
             ClientCoachRequest.is_accepted.is_(True),
             ClientCoachRelationship.is_active.is_(True),
-            ClientCoachRelationship.client_blocked.is_(False),
-            ClientCoachRelationship.coach_blocked.is_(False),
         )
         .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
         .offset(pagination.skip)
@@ -1047,8 +1043,6 @@ def _authorize_coach_for_client(db, coach_id: int, client_id: int) -> None:
             select(ClientCoachRelationship).where(
                 ClientCoachRelationship.request_id == accepted.id,
                 ClientCoachRelationship.is_active == True,
-                ClientCoachRelationship.coach_blocked == False,
-                ClientCoachRelationship.client_blocked == False,
             )
         ).first()
         if rel:

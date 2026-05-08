@@ -37,6 +37,66 @@ from datetime import datetime
 router = APIRouter(prefix="/roles/shared/account", tags=["shared", "account"])
 
 
+@router.get("/public/{account_id}")
+def get_public_account_summary(
+    account_id: int,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """Public profile for any account. Used for chat partner display etc.
+    Returns id, name, age, gender, pfp_url, role flags."""
+    target = db.get(Account, account_id)
+    if target is None:
+        raise HTTPException(404, detail="Account not found")
+    is_verified_coach = False
+    if target.coach_id is not None:
+        from src.database.coach.models import Coach
+        coach = db.get(Coach, target.coach_id)
+        if coach is not None and getattr(coach, "verified", False):
+            is_verified_coach = True
+    return {
+        "id": target.id,
+        "name": target.name,
+        "pfp_url": target.pfp_url,
+        "age": target.age,
+        "gender": target.gender,
+        "is_coach": target.coach_id is not None,
+        "is_verified_coach": is_verified_coach,
+        "is_client": target.client_id is not None,
+        "is_admin": target.admin_id is not None,
+    }
+
+
+@router.post("/report/{account_id}")
+def report_account(
+    account_id: int,
+    reason: str,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """Generic account-vs-account report. Reason is a free-text summary."""
+    if acc is None or acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    if acc.id == account_id:
+        raise HTTPException(400, detail="Cannot report yourself")
+    target = db.get(Account, account_id)
+    if target is None:
+        raise HTTPException(404, detail="Account not found")
+    if not reason or not reason.strip():
+        raise HTTPException(422, detail="Report reason is required")
+
+    from src.database.reports.models import AccountReport
+    report = AccountReport(
+        reporter_id=acc.id,
+        reportee_id=account_id,
+        reason=reason.strip(),
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return {"report_id": report.id}
+
+
 @router.get("/me", response_model=FullProfileResponse)
 def get_full_profile(
     db: Session = Depends(get_session),
@@ -368,7 +428,7 @@ def notify_affected_accounts(
         role = "coach"
 
     message = f"{deactivated_account.name} has deactivated their account."
-    details = f"{role.capitalize()} account {deactivated_account.id} was deactivated."
+    details = "Shared plans or schedules involving this user may be affected."
 
     for affected_account in affected_accounts:
         if affected_account.id is None:
