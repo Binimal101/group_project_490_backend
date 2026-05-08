@@ -82,7 +82,9 @@ def refresh_payments(payload: dict = Body(...), db = Depends(get_session)):
     if provided != expected:
         raise HTTPException(status_code=403, detail="Invalid cron secret")
 
-    subs = db.exec(select(Subscription)).all()
+    subs = db.exec(
+        select(Subscription).where(Subscription.status == SubscriptionStatus.ACTIVE)
+    ).all()
 
     for s in subs:
         # skip subscriptions without a pricing plan
