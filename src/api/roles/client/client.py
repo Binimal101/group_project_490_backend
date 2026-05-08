@@ -236,10 +236,7 @@ def get_coach_availability_for_client(coach_id: int, db = Depends(get_session), 
     if coach_account is None or coach.verified == False:
         raise HTTPException(404, detail="Coach is not verified yet, availability is not viewable")
 
-    if coach.coach_availability is None:
-        return CoachAvailabilityResponse(coach_availabilities=[])
-
-    availabilities = db.exec(select(Availability).where(Availability.coach_availability_id == coach.coach_availability)).all()
+    availabilities = db.exec(select(Availability).where(Availability.account_id == coach_account.id)).all()
 
     return CoachAvailabilityResponse(coach_availabilities=availabilities)
 

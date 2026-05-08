@@ -48,15 +48,17 @@ class Availability(SQLModelLU, table=True):
     __tablename__ = "availability"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    account_id: int = Field(foreign_key="account.id", index=True)
-    start_dt: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-    end_dt: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True, ondelete="CASCADE")
+    start_dt: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=False))
+    end_dt: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=False))
     repeats_weekly: bool = Field(default=False)
     recurrence_end_dt: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     max_time_commitment_seconds: Optional[Decimal] = Field(default=None, max_digits=8, decimal_places=2)
 
     @model_validator(mode="after")
     def validate_time(self):
+        if self.start_dt is None or self.end_dt is None:
+            return self
         if self.start_dt >= self.end_dt:
             raise HTTPException(status_code=400, detail="start_dt must be before end_dt")
         if self.recurrence_end_dt is not None and self.recurrence_end_dt < self.end_dt:
@@ -68,7 +70,7 @@ class BusySlot(SQLModelLU, table=True):
     __tablename__ = "busy_slot"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True)
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True, ondelete="CASCADE")
     start_dt: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     end_dt: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     source: str = Field(default="manual")

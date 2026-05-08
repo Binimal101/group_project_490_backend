@@ -1,16 +1,28 @@
 import random
+from datetime import datetime, timedelta, timezone
+
+
+def _next_weekday_dt(weekday_name: str, hour: int, minute: int = 0):
+    days = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
+    today = datetime.now(timezone.utc).replace(microsecond=0, second=0, minute=minute, hour=hour)
+    delta = (days[weekday_name.lower()] - today.weekday()) % 7
+    if delta == 0:
+        delta = 7
+    return today + timedelta(days=delta)
 
 def build_coach_request_payload(weekday="tuesday", payment_interval="monthly", price_cents=3000):
     """
     Builds a mock payload for completing the coach registration request.
     Includes pricing fields required by the current API contract.
     """
+    start = _next_weekday_dt(weekday, 18)
+    end = start + timedelta(hours=2)
     return {
         "availabilities": [
             {
-                "weekday": weekday,
-                "start_time": "18:00:00",
-                "end_time": "20:00:00",
+                "start_dt": start.isoformat(),
+                "end_dt": end.isoformat(),
+                "repeats_weekly": True,
             }
         ],
         "experiences": [
@@ -40,12 +52,14 @@ def build_update_coach_info_payload(weekday="wednesday"):
     """
     Builds a mock payload for updating coach information, which includes certifications, experiences, and availability.
     """
+    start = _next_weekday_dt(weekday, 19)
+    end = start + timedelta(hours=2)
     return {
         "availabilities": [
             {
-                "weekday": weekday,
-                "start_time": "19:00:00",
-                "end_time": "21:00:00",
+                "start_dt": start.isoformat(),
+                "end_dt": end.isoformat(),
+                "repeats_weekly": True,
             }
         ],
         "experiences": [

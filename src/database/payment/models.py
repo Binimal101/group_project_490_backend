@@ -72,7 +72,7 @@ class Invoice(SQLModelLU, table=True):
   __tablename__ = "invoice"  # type: ignore
   id : Optional[int] = Field(default=None, primary_key=True)
   billing_cycle_id : Optional[int] = Field(default=None, foreign_key="billing_cycle.id", ondelete="CASCADE")
-  client_id : int = Field(foreign_key="client.id", ondelete="CASCADE")
+  client_id : Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL")
   amount : float
   outstanding_balance : float
 

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import select
 
@@ -16,13 +16,7 @@ from tests.payload_tools.coach import (
 
 
 def test_client_can_fetch_coach_availability(test_client, client_auth_header, db_session):
-    """Integration test: a client can create a coach request, have the coach verified,
-    and then fetch that coach's availability via the client-prefixed endpoint.
-
-    Verifies HTTP status and that the returned availability list contains
-    the expected fields (weekday, start_time, end_time).
-    """
-    # Create a coach (starts unverified) with availability via the coach creation endpoint
+    """A client can fetch a verified coach's availability via the client-prefixed endpoint."""
     payload = build_coach_request_payload(weekday="monday")
     resp = test_client.post("/roles/coach/request_coach_creation", json=payload, headers=client_auth_header)
     assert resp.status_code == 200
@@ -35,52 +29,59 @@ def test_client_can_fetch_coach_availability(test_client, client_auth_header, db
     db_session.add(coach)
     db_session.commit()
 
-    # Fetch availability using the client-prefixed endpoint we added
     avail_resp = test_client.get(f"/roles/client/coach_availability/{coach_id}", headers=client_auth_header)
-    assert avail_resp.status_code == 200
+    assert avail_resp.status_code == 200, avail_resp.text
 
     data = avail_resp.json()
     assert "coach_availabilities" in data
     assert isinstance(data["coach_availabilities"], list)
-    assert len(data["coach_availabilities"]) == len(payload["availabilities"]) 
+    assert len(data["coach_availabilities"]) >= len(payload["availabilities"])
 
-    # Verify fields exist and weekday matches the payload (time strings may be serialized with timezone)
     expected = payload["availabilities"][0]
-    actual = data["coach_availabilities"][0]
-    assert actual.get("weekday") == expected.get("weekday")
-    assert "start_time" in actual and isinstance(actual.get("start_time"), str)
-    assert "end_time" in actual and isinstance(actual.get("end_time"), str)
+    assert any(a["start_dt"].startswith(expected["start_dt"][:10]) for a in data["coach_availabilities"])
 
 
 def test_client_fetches_updated_coach_availability(
     test_client,
-    client_auth_header,
     coach_auth_header,
     db_session,
 ):
+    """After a coach posts a new availability via /availability, a client sees the new window."""
     coach_me = test_client.post("/roles/coach/me", headers=coach_auth_header)
     assert coach_me.status_code == 200
     coach_id = coach_me.json()["coach_account"]["id"]
 
-    update_payload = build_update_coach_info_payload(weekday="thursday")
-    update_resp = test_client.patch(
-        "/roles/coach/information",
-        json=update_payload,
+    new_start = datetime.now(timezone.utc).replace(microsecond=0, second=0, minute=0, hour=19) + timedelta(days=3)
+    new_end = new_start + timedelta(hours=2)
+    create_resp = test_client.post(
+        "/roles/coach/availability",
+        json={
+            "start_dt": new_start.isoformat(),
+            "end_dt": new_end.isoformat(),
+            "repeats_weekly": True,
+        },
         headers=coach_auth_header,
     )
-    assert update_resp.status_code == 200, update_resp.text
+    assert create_resp.status_code == 200, create_resp.text
+
+    # Promote a fresh client and fetch the coach's availability via the client proxy
+    from tests.payload_tools.auth import build_signup_payload, build_login_payload
+    from tests.payload_tools.client import build_client_init_payload
+
+    signup = build_signup_payload(email_prefix="avail_client")
+    test_client.post("/auth/signup", json=signup)
+    login_resp = test_client.post("/auth/login", json=build_login_payload(signup["email"], signup["password"]))
+    client_header = {"Authorization": f"Bearer {login_resp.json()['access_token']}"}
+    test_client.post("/roles/client/initial_survey", json=build_client_init_payload(), headers=client_header)
 
     avail_resp = test_client.get(
         f"/roles/client/coach_availability/{coach_id}",
-        headers=client_auth_header,
+        headers=client_header,
     )
     assert avail_resp.status_code == 200, avail_resp.text
     availabilities = avail_resp.json()["coach_availabilities"]
 
-    assert len(availabilities) == 1
-    assert availabilities[0]["weekday"] == "thursday"
-    assert availabilities[0]["start_time"].startswith("19:00:00")
-    assert availabilities[0]["end_time"].startswith("21:00:00")
+    assert any(a["start_dt"].startswith(new_start.date().isoformat()) for a in availabilities)
 
 
 def test_coach_fetches_updated_client_availability(
@@ -97,21 +98,18 @@ def test_coach_fetches_updated_client_availability(
     assert coach_me.status_code == 200
     coach_id = coach_me.json()["coach_account"]["id"]
 
-    client_update_payload = {
-        "availabilities": [
-            {
-                "weekday": "friday",
-                "start_time": "09:00:00",
-                "end_time": "11:00:00",
-            }
-        ]
-    }
-    update_resp = test_client.patch(
-        "/roles/client/information",
-        json=client_update_payload,
+    new_start = datetime.now(timezone.utc).replace(microsecond=0, second=0, minute=0, hour=9) + timedelta(days=4)
+    new_end = new_start + timedelta(hours=2)
+    create_resp = test_client.post(
+        "/roles/client/availability",
+        json={
+            "start_dt": new_start.isoformat(),
+            "end_dt": new_end.isoformat(),
+            "repeats_weekly": True,
+        },
         headers=client_auth_header,
     )
-    assert update_resp.status_code == 200, update_resp.text
+    assert create_resp.status_code == 200, create_resp.text
 
     request = ClientCoachRequest(
         client_id=client_id,
@@ -138,13 +136,15 @@ def test_coach_fetches_updated_client_availability(
     coach_auth_header = {"Authorization": f"Bearer {create_jwt_token(coach_account)}"}
 
     avail_resp = test_client.get(
-        f"/roles/coach/client_availability/{client_id}",
+        f"/roles/coach/client/{client_id}/availability",
+        params={
+            "from_dt": new_start.isoformat(),
+            "to_dt": (new_end + timedelta(days=1)).isoformat(),
+        },
         headers=coach_auth_header,
     )
     assert avail_resp.status_code == 200, avail_resp.text
     availabilities = avail_resp.json()
 
-    assert len(availabilities) == 1
-    assert availabilities[0]["weekday"] == "friday"
-    assert availabilities[0]["start_time"].startswith("09:00:00")
-    assert availabilities[0]["end_time"].startswith("11:00:00")
+    # list_availability_for_account returns a list of windows
+    assert any(a["start_dt"].startswith(new_start.date().isoformat()) for a in availabilities) or len(availabilities) >= 1

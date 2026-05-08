@@ -142,10 +142,6 @@ def create_coach_request(coach_details: CoachRequestInput, db = Depends(get_sess
     db.add(pricing_plan)
     db.flush()
 
-    # Persist the linkage from coach -> coach_availability so availability lookups work
-    coach.coach_availability = coach_availability.id
-    db.add(coach)
-
     db.commit()
 
     return CreateCoachRequestResponse(coach_request_id=cr.id, coach_id=coach.id) # type: ignore

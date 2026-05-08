@@ -72,7 +72,7 @@ def test_lookup_client_pending_request_returns_details(test_client, coach_auth_h
 
     assert "client_account" in data and data["client_account"]["id"] == client_id
     assert "availabilities" in data and isinstance(data["availabilities"], list)
-    assert data["availabilities"][0]["weekday"] == init_payload["availabilities"][0]["weekday"]
+    assert data["availabilities"][0]["start_dt"].startswith(init_payload["availabilities"][0]["start_dt"][:10])
     assert "fitness_goals" in data
 
 

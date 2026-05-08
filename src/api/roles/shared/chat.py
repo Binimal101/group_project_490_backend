@@ -29,36 +29,50 @@ def get_or_create_chat_with_account(account_id: int, db = Depends(get_session), 
     if to_acc is None:
         raise HTTPException(404, detail="Account not found")
 
-    # Determine if from_acc is a client or coach and find/create the relationship
-    if from_acc.coach_id is None:
-        # from_acc is a client, to_acc should be a coach
-        if to_acc.coach_id is None:
-            raise HTTPException(400, detail="Cannot chat between two clients")
+    # A coach is also a client by default, so either account could be on either
+    # side of a ClientCoachRequest. Build whichever direction(s) apply, then
+    # pick the most recent ACTIVE, non-blocked relationship — re-hires after a
+    # termination leave a stale request/relationship pair that would otherwise
+    # win an unordered .first() lookup.
+    direction_filters = []
+    if from_acc.client_id is not None and to_acc.coach_id is not None:
+        direction_filters.append(
+            (ClientCoachRequest.client_id == from_acc.client_id)
+            & (ClientCoachRequest.coach_id == to_acc.coach_id)
+        )
+    if from_acc.coach_id is not None and to_acc.client_id is not None:
+        direction_filters.append(
+            (ClientCoachRequest.client_id == to_acc.client_id)
+            & (ClientCoachRequest.coach_id == from_acc.coach_id)
+        )
 
-        request = db.query(ClientCoachRequest).filter(
-            ClientCoachRequest.client_id == from_acc.client_id,
-            ClientCoachRequest.coach_id == to_acc.coach_id
-        ).first()
-    else:
-        # from_acc is a coach, to_acc should be a client
-        if to_acc.client_id is None:
-            raise HTTPException(400, detail="Cannot chat between two coaches")
+    if not direction_filters:
+        raise HTTPException(404, detail="No relationship exists between these accounts, didn't pass direction filter")
 
-        request = db.query(ClientCoachRequest).filter(
-            ClientCoachRequest.client_id == to_acc.client_id,
-            ClientCoachRequest.coach_id == from_acc.coach_id
-        ).first()
+    direction_predicate = direction_filters[0]
+    for extra in direction_filters[1:]:
+        direction_predicate = direction_predicate | extra
 
-    if request is None:
-        raise HTTPException(404, detail="No relationship exists between these accounts")
-
-    relationship = db.query(ClientCoachRelationship).filter(
-        ClientCoachRelationship.request_id == request.id,
-        ClientCoachRelationship.is_active == True,
+    row = db.exec(
+        select(ClientCoachRequest, ClientCoachRelationship)
+        .join(
+            ClientCoachRelationship,
+            ClientCoachRelationship.request_id == ClientCoachRequest.id,
+        )
+        .where(
+            direction_predicate,
+            ClientCoachRequest.is_accepted.is_(True),
+            ClientCoachRelationship.is_active.is_(True),
+            ClientCoachRelationship.client_blocked.is_(False),
+            ClientCoachRelationship.coach_blocked.is_(False),
+        )
+        .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
     ).first()
 
-    if relationship is None:
+    if row is None:
         raise HTTPException(404, detail="No active relationship between these accounts")
+
+    request, relationship = row
 
     # Find or create chat
     chat = db.query(Chat).filter(Chat.client_coach_relationship_id == relationship.id).first()
