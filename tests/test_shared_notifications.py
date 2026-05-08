@@ -118,7 +118,7 @@ def test_notification_flows(test_client, auth_header, db_session):
     assert all(n["is_read"] is True for n in created_notifications)
 
 
-def test_chat_message_creates_recipient_notification(test_client, client_auth_header, db_session):
+def test_chat_message_does_not_create_bell_notification(test_client, client_auth_header, db_session):
     coach_header, coach_me = _create_verified_coach(test_client, db_session)
 
     client_me = test_client.get("/me", headers=client_auth_header).json()
@@ -166,12 +166,8 @@ def test_chat_message_creates_recipient_notification(test_client, client_auth_he
     )
     assert send_resp.status_code == 200
 
+    # Chat messages no longer create bell notifications; unread count is derived from chat routes
     query_resp = test_client.get("/roles/shared/notifications/query", headers=coach_header)
     assert query_resp.status_code == 200
     chat_notifications = [n for n in query_resp.json() if n["fav_category"] == "chat_message"]
-    assert chat_notifications
-    latest = chat_notifications[0]
-    assert latest["account_id"] == coach_me["id"]
-    assert latest["message"] == f"New message from {client_me['name']}"
-    assert latest["details"] == "Hello coach"
-    assert latest["is_read"] is False
+    assert len(chat_notifications) == 0

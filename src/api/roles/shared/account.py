@@ -590,25 +590,21 @@ def activate_account(
     return ActivateAccountResponse(success=True, message="Account activated successfully.")
 
 
-@router.delete("/delete", response_model=DeleteAccountResponse)
-def delete_account(
-    db: Session = Depends(get_session),
-    acc: Account = Depends(get_active_account),
-):
+def purge_account_data(db: Session, account: Account) -> None:
     """
-    Permanently delete the current user's account and all associated data.
+    Cascade-clean every row that would block deletion of the given account.
 
     Several FK columns referencing `account` and `admin` use NO ACTION (the DB
-    refuses to delete a parent that still has children). The columns are also
-    NOT NULL, so we can't simply detach them. So before issuing the deletes,
-    walk the dependency chain from the leaves up and remove each level.
-    """
-    account = db.get(Account, acc.id)
-    if account is None:
-        raise HTTPException(404, detail="Account not found")
+    refuses to delete a parent that still has children) and are also NOT NULL
+    (so we can't simply detach them). This walks the dependency chain leaf-up
+    and removes each level, then drops the parent client/coach role rows
+    (which cascade their own children automatically).
 
+    Caller is responsible for `db.delete(account)` and `db.commit()` after.
+    Used by self-delete (DELETE /shared/account/delete) and admin-delete
+    (DELETE /admin/accounts/{id}).
+    """
     account_id = account.id
-    admin_id = account.admin_id
 
     # ── workout_plan_activity branch ───────────────────────────────────
     # completed_workout.workout_plan_activity_id → workout_plan_activity (NO ACTION)
@@ -659,7 +655,7 @@ def delete_account(
     # ── chat_message ──────────────────────────────────────────────────
     db.exec(delete(ChatMessage).where(ChatMessage.from_account_id == account_id))
 
-    # ── role_promotion_resolution (only the rows this user is the subject of) ──
+    # ── role_promotion_resolution (only rows where this user is the subject) ──
     # We do NOT match on admin_id here: admin rows can be shared across multiple
     # accounts (data shows account 21 and 33 both reference admin_id=3), so an
     # admin_id match could nuke resolutions belonging to a different user.
@@ -692,10 +688,21 @@ def delete_account(
 
     # NOTE: We deliberately do NOT delete the admin row, even if account.admin_id
     # is set. Multiple accounts can share an admin_id, so deleting the admin row
-    # would orphan the others. The user's account row is about to vanish, taking
-    # its admin_id reference with it — leaving the admin row intact is safe and
-    # preserves access for any other accounts that share it.
+    # would orphan the others. The account row is about to vanish, taking its
+    # admin_id reference with it — leaving the admin row intact is safe.
 
+
+@router.delete("/delete", response_model=DeleteAccountResponse)
+def delete_account(
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """Permanently delete the current user's account and all associated data."""
+    account = db.get(Account, acc.id)
+    if account is None:
+        raise HTTPException(404, detail="Account not found")
+
+    purge_account_data(db, account)
     db.delete(account)
     db.commit()
     return DeleteAccountResponse(success=True, message="Account deleted successfully.")

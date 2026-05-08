@@ -162,7 +162,8 @@ def test_client_block_terminates_active_relationship(test_client, db_session):
     assert rel.is_active is False
 
     my_coach_after = test_client.get("/roles/client/my_coach", headers=client_header)
-    assert my_coach_after.status_code == 404
+    assert my_coach_after.status_code == 200
+    assert my_coach_after.json()["coach"] is None
 
 
 def test_coach_cannot_block_active_client(test_client, db_session):

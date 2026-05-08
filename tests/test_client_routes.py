@@ -44,7 +44,8 @@ def test_get_my_coach(test_client, auth_header):
         headers=auth_header
     )
 
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert response.json()["coach"] is None
 
 
 def test_get_coach_profile(test_client, auth_header):
