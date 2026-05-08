@@ -11,7 +11,8 @@ from src.database.session import get_session
 from src.database.account.models import Account, Notification
 
 # payment models
-from src.database.payment.models import Subscription, BillingCycle, Invoice, PricingPlan, PricingInterval
+from src.database.payment.models import Subscription, BillingCycle, Invoice, PricingPlan, PricingInterval, SubscriptionStatus
+from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
 from src.api.auth.services import serialize_account
 
 #Routers
@@ -114,24 +115,72 @@ def refresh_payments(payload: dict = Body(...), db = Depends(get_session)):
         invoices = db.exec(select(Invoice).where(Invoice.billing_cycle_id == last_cycle.id, Invoice.outstanding_balance > 0)).all()
         total_outstanding = sum((inv.outstanding_balance or 0) for inv in invoices)
 
-        if total_outstanding > 0:
-            # zero out old outstanding invoices
+        client_account = db.exec(select(Account).where(Account.client_id == s.client_id)).first()
+        coach_account = db.exec(select(Account).where(Account.coach_id == plan.coach_id)).first()
+
+        cycle_expired = last_cycle.end_date is not None and last_cycle.end_date < date.today()
+
+        if total_outstanding > 0 and cycle_expired:
+            # Billing cycle ended with unpaid balance — cancel the relationship
             for inv in invoices:
                 inv.outstanding_balance = 0.0
                 db.add(inv)
 
-            # create a new invoice representing the payment (mocked as successful)
+            s.status = SubscriptionStatus.CANCELED
+            s.canceled_at = date.today()
+            db.add(s)
+
+            # terminate the active relationship for this client-coach pair
+            overdue_request = db.exec(
+                select(ClientCoachRequest).where(
+                    ClientCoachRequest.client_id == s.client_id,
+                    ClientCoachRequest.coach_id == plan.coach_id,
+                    ClientCoachRequest.is_accepted == True,
+                )
+            ).first()
+            if overdue_request:
+                overdue_rel = db.exec(
+                    select(ClientCoachRelationship).where(
+                        ClientCoachRelationship.request_id == overdue_request.id,
+                        ClientCoachRelationship.is_active == True,
+                    )
+                ).first()
+                if overdue_rel:
+                    overdue_rel.is_active = False
+                    db.add(overdue_rel)
+
+            client_name = client_account.name if client_account else "The client"
+            if client_account and client_account.id is not None:
+                db.add(Notification(
+                    account_id=client_account.id,
+                    fav_category="payment_overdue",
+                    message="Your payment is overdue and your subscription has been cancelled.",
+                    details=f"An outstanding balance of ${total_outstanding:.2f} was not paid before the billing cycle ended.",
+                ))
+            if coach_account and coach_account.id is not None:
+                db.add(Notification(
+                    account_id=coach_account.id,
+                    fav_category="payment_overdue",
+                    message=f"{client_name} missed a payment of ${total_outstanding:.2f}.",
+                    details="The billing cycle ended with an unpaid balance. The coaching relationship has been cancelled.",
+                ))
+
+            continue  # skip creating the next billing cycle for a cancelled subscription
+
+        elif total_outstanding > 0:
+            # Cycle still active — auto-settle outstanding invoices
+            for inv in invoices:
+                inv.outstanding_balance = 0.0
+                db.add(inv)
+
             paid_invoice = Invoice(billing_cycle_id=last_cycle.id, client_id=s.client_id, amount=total_outstanding, outstanding_balance=0.0)
             db.add(paid_invoice)
             db.flush()
 
-            # send notifications to client and coach about the payment
-            client_account = db.exec(select(Account).where(Account.client_id == paid_invoice.client_id)).first()
-            coach_account = db.exec(select(Account).where(Account.coach_id == plan.coach_id)).first()
             if client_account and client_account.id is not None:
-                db.add(Notification(account_id=client_account.id, fav_category="payment", message=f"Your payment of ${total_outstanding:.2f} was processed.", details=f"Invoice {paid_invoice.id} for billing cycle {last_cycle.id} was paid."))
+                db.add(Notification(account_id=client_account.id, fav_category="payment", message=f"Your payment of ${total_outstanding:.2f} was processed.", details="Your outstanding balance for this billing cycle has been cleared."))
             if coach_account and coach_account.id is not None:
-                db.add(Notification(account_id=coach_account.id, fav_category="payment", message=f"A payment of ${total_outstanding:.2f} was received from client {paid_invoice.client_id}.", details=f"Invoice {paid_invoice.id} for billing cycle {last_cycle.id} was paid."))
+                db.add(Notification(account_id=coach_account.id, fav_category="payment", message=f"A payment of ${total_outstanding:.2f} was received from {client_account.name}.", details="Their outstanding balance for this billing cycle has been cleared."))
 
         # create next billing cycle based on pricing interval
         # determine next_start

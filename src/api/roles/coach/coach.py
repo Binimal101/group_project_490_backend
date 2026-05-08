@@ -295,7 +295,7 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
             account_id=client_account.id,
             fav_category="workout_plan",
             message=f"{acc.name} prescribed a new workout plan.",
-            details=f"Workout plan {payload.workout_plan_id} scheduled across {len(block_pairs)} block(s).",
+            details=f"A new workout plan has been scheduled across {len(block_pairs)} session(s). Check your schedule for details.",
         ))
 
     db.commit()
@@ -727,8 +727,8 @@ def accept_coach_request(request_id: int, db = Depends(get_session), acc: Accoun
         n = Notification(
             account_id=client_account.id,
             fav_category="relationship",
-            message="Your request to hire a coach was accepted.",
-            details=f"Request {request.id} was accepted and relationship will be created.",
+            message=f"Your request to hire {acc.name} was accepted.",
+            details="Your coaching relationship is now active. Expect a billing invoice shortly.",
         )
         db.add(n)
 
@@ -762,9 +762,9 @@ def accept_coach_request(request_id: int, db = Depends(get_session), acc: Accoun
     client_account = db.exec(select(Account).where(Account.client_id == request.client_id)).first()
     coach_account = db.exec(select(Account).where(Account.coach_id == request.coach_id)).first()
     if client_account and client_account.id is not None:
-        db.add(Notification(account_id=client_account.id, fav_category="payment", message=f"A new invoice of ${amount:.2f} was issued.", details=f"Invoice {invoice.id} for billing cycle {billing_cycle.id}."))
+        db.add(Notification(account_id=client_account.id, fav_category="payment", message=f"A new invoice of ${amount:.2f} was issued.", details=f"This covers your coaching plan from {billing_cycle.entry_date} to {billing_cycle.end_date}."))
     if coach_account and coach_account.id is not None:
-        db.add(Notification(account_id=coach_account.id, fav_category="payment", message=f"Your client was invoiced ${amount:.2f}.", details=f"Invoice {invoice.id} for client {request.client_id}."))
+        db.add(Notification(account_id=coach_account.id, fav_category="payment", message=f"{client_account.name} was invoiced ${amount:.2f}.", details=f"This covers the coaching plan from {billing_cycle.entry_date} to {billing_cycle.end_date}."))
 
     db.commit()
 
@@ -796,8 +796,8 @@ def deny_client_request(request_id: int, db = Depends(get_session), acc: Account
         n = Notification(
             account_id=client_account.id,
             fav_category="relationship_request_denied",
-            message=f"Your request to hire coach {acc.name} was rejected.",
-            details=f"Request {request.id} was rejected by the coach.",
+            message=f"Your request to hire {acc.name} was not accepted.",
+            details="You may submit a new request to another coach.",
         )
         db.add(n)
 

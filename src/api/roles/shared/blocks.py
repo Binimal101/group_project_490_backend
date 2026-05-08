@@ -160,6 +160,20 @@ def block_account(
     if target is None or target.id is None:
         raise HTTPException(404, detail="Account not found")
 
+    # If the target has already blocked the caller, the caller cannot retaliate.
+    # Block enforcement is one-directional: the first block "wins".
+    they_blocked_me = db.exec(
+        select(AccountBlock).where(
+            AccountBlock.blocker_id == target.id,
+            AccountBlock.blockee_id == acc.id,
+        )
+    ).first()
+    if they_blocked_me is not None:
+        raise HTTPException(
+            403,
+            detail="You cannot block an account that has already blocked you.",
+        )
+
     if _coach_has_active_relationship_with_client(db, acc, target):
         raise HTTPException(
             403,
@@ -224,6 +238,45 @@ def unblock_account(
         db.commit()
 
     return BlockResponse(blocker_id=acc.id, blockee_id=target.id, cancelled_relationships=0)
+
+
+class BlockStatusResponse(BaseModel):
+    partner_id: int
+    i_blocked_them: bool
+    they_blocked_me: bool
+
+
+@router.get("/status/{account_id}", response_model=BlockStatusResponse)
+def block_status(
+    account_id: int,
+    db = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """Authoritative block-direction probe between caller and target.
+    The frontend should never cache this — always re-fetch when rendering
+    chat affordances so unblock state on the other side is visible immediately."""
+    if acc is None or acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+
+    i_blocked_them = db.exec(
+        select(AccountBlock).where(
+            AccountBlock.blocker_id == acc.id,
+            AccountBlock.blockee_id == account_id,
+        )
+    ).first() is not None
+
+    they_blocked_me = db.exec(
+        select(AccountBlock).where(
+            AccountBlock.blocker_id == account_id,
+            AccountBlock.blockee_id == acc.id,
+        )
+    ).first() is not None
+
+    return BlockStatusResponse(
+        partner_id=account_id,
+        i_blocked_them=i_blocked_them,
+        they_blocked_me=they_blocked_me,
+    )
 
 
 @router.get("", response_model=BlockedListResponse)

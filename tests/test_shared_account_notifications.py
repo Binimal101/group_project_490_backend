@@ -100,7 +100,8 @@ def test_account_deactivate_sends_notification(
 
     assert notifications, "No notifications found for coach"
     assert any(
-        n.details and "deactivated" in n.details.lower()
+        ("deactivated" in (n.message or "").lower())
+        or ("deactivated" in (n.details or "").lower())
         for n in notifications
     )
     assert remaining_relationship is None
@@ -148,7 +149,8 @@ def test_account_deactivate_coach_notifies_client(
 
     assert notifications, "No notifications found for client"
     assert any(
-        n.details and "deactivated" in n.details.lower()
+        ("deactivated" in (n.message or "").lower())
+        or ("deactivated" in (n.details or "").lower())
         for n in notifications
     )
     assert remaining_relationship is None

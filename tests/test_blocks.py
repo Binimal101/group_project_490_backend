@@ -325,6 +325,83 @@ def test_chat_partner_endpoint_returns_other_participant(test_client):
     assert b_view["id"] == a_me["id"]
 
 
+def test_blockee_cannot_block_blocker(test_client):
+    """Block enforcement is one-way: once A blocks B, B cannot block A back."""
+    a_header, a_me = _signup_client(test_client, "rev_a")
+    b_header, b_me = _signup_client(test_client, "rev_b")
+
+    ok = test_client.post(f"/roles/shared/blocks/{b_me['id']}", headers=a_header)
+    assert ok.status_code == 200
+
+    retaliate = test_client.post(f"/roles/shared/blocks/{a_me['id']}", headers=b_header)
+    assert retaliate.status_code == 403, retaliate.text
+
+
+def test_block_status_endpoint_reflects_directions(test_client):
+    """The /status/{id} probe must report block direction without any client-side state."""
+    a_header, a_me = _signup_client(test_client, "stat_a")
+    b_header, b_me = _signup_client(test_client, "stat_b")
+
+    initial_a = test_client.get(f"/roles/shared/blocks/status/{b_me['id']}", headers=a_header).json()
+    assert initial_a == {"partner_id": b_me["id"], "i_blocked_them": False, "they_blocked_me": False}
+
+    test_client.post(f"/roles/shared/blocks/{b_me['id']}", headers=a_header)
+
+    a_view = test_client.get(f"/roles/shared/blocks/status/{b_me['id']}", headers=a_header).json()
+    b_view = test_client.get(f"/roles/shared/blocks/status/{a_me['id']}", headers=b_header).json()
+    assert a_view["i_blocked_them"] is True and a_view["they_blocked_me"] is False
+    assert b_view["i_blocked_them"] is False and b_view["they_blocked_me"] is True
+
+
+def test_public_account_includes_verified_coach_flag(test_client, db_session):
+    """is_verified_coach must come back true only when the target has coach_id and Coach.verified=True."""
+    caller_header, _ = _signup_client(test_client, "vc_caller")
+
+    coach_header, coach_me = _signup_client(test_client, "vc_coach")
+    _promote_to_coach(test_client, coach_header, db_session)
+    promoted = test_client.get(f"/roles/shared/account/public/{coach_me['id']}", headers=caller_header).json()
+    assert promoted["is_coach"] is True and promoted["is_verified_coach"] is True
+
+    # Unverified coach: build the request but don't auto-verify.
+    unv_header, unv_me = _signup_client(test_client, "vc_unverified")
+    res = test_client.post(
+        "/roles/coach/request_coach_creation",
+        json=build_coach_request_payload(),
+        headers=unv_header,
+    )
+    assert res.status_code == 200
+    unverified = test_client.get(f"/roles/shared/account/public/{unv_me['id']}", headers=caller_header).json()
+    assert unverified["is_coach"] is True and unverified["is_verified_coach"] is False
+
+
+def test_report_endpoint_creates_account_report(test_client, db_session):
+    """Generic /roles/shared/account/report/{id} stores the report and rejects self/empty/unknown targets."""
+    a_header, _ = _signup_client(test_client, "rep_a")
+    _, b_me = _signup_client(test_client, "rep_b")
+
+    ok = test_client.post(
+        f"/roles/shared/account/report/{b_me['id']}?reason=spammy%20behavior",
+        headers=a_header,
+    )
+    assert ok.status_code == 200, ok.text
+    assert isinstance(ok.json()["report_id"], int)
+
+    # Empty reason rejected.
+    empty = test_client.post(
+        f"/roles/shared/account/report/{b_me['id']}?reason=",
+        headers=a_header,
+    )
+    assert empty.status_code == 422
+
+    # Self report rejected.
+    me = test_client.get("/me", headers=a_header).json()
+    self_report = test_client.post(
+        f"/roles/shared/account/report/{me['id']}?reason=test",
+        headers=a_header,
+    )
+    assert self_report.status_code == 400
+
+
 def test_account_deletion_cascades_chats_blocks_and_messages(test_client, db_session):
     """Repro of the recent DELETE failure: adding new tables without ON DELETE CASCADE
     used to make /roles/shared/account/delete fail with FK violations."""

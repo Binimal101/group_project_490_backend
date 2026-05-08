@@ -64,7 +64,13 @@ def _other_participant(db, chat_id: int, sender_id: int) -> AccountChat:
     return other
 
 
-def _public_summary(acc: Account) -> PublicAccountSummary:
+def _public_summary(db, acc: Account) -> PublicAccountSummary:
+    is_verified = False
+    if acc.coach_id is not None:
+        from src.database.coach.models import Coach
+        coach = db.get(Coach, acc.coach_id)
+        if coach is not None and getattr(coach, "verified", False):
+            is_verified = True
     return PublicAccountSummary(
         id=acc.id,  # type: ignore
         name=acc.name,
@@ -72,7 +78,9 @@ def _public_summary(acc: Account) -> PublicAccountSummary:
         age=acc.age,
         gender=acc.gender,
         is_coach=acc.coach_id is not None,
+        is_verified_coach=is_verified,
         is_client=acc.client_id is not None,
+        is_admin=acc.admin_id is not None,
     )
 
 
@@ -133,7 +141,7 @@ def list_conversations(db = Depends(get_session), acc: Account = Depends(get_act
         summaries.append(
             ConversationSummary(
                 chat_id=chat_id,
-                partner=_public_summary(partner),
+                partner=_public_summary(db, partner),
                 last_message=latest.message_text if latest else None,
                 last_message_at=latest.last_updated if latest else None,
                 unread_count=unread_by_chat.get(chat_id, 0),
@@ -158,7 +166,7 @@ def get_chat_partner(chat_id: int, db = Depends(get_session), acc: Account = Dep
     partner = db.get(Account, other_row.account_id)
     if partner is None:
         raise HTTPException(404, detail="Partner account not found")
-    return _public_summary(partner)
+    return _public_summary(db, partner)
 
 
 @router.get("/by-account/{account_id}", response_model=ChatWithAccountResponse)

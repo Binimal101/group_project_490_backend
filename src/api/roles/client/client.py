@@ -431,7 +431,7 @@ def create_coach_request(coach_id: int, db = Depends(get_session), acc: Account 
             account_id=coach_account.id,
             fav_category="relationship_request_creation",
             message=f"{acc.name} has requested to hire you.",
-            details=f"Request {request.id} from client {client.id} to coach {coach.id}.",
+            details="Review this request to accept or decline.",
         )
         db.add(n)
         db.commit()
@@ -465,8 +465,8 @@ def rescind_request(request_id: int, db = Depends(get_session), acc: Account = D
     coach_account = db.exec(select(Account).where(Account.coach_id == request.coach_id)).first()
 
     if coach_account and coach_account.id is not None:
-        message = "An incoming coach request was rescinded."
-        details = f"Request {request.id} was rescinded by the client."
+        message = f"{acc.name} has withdrawn their coaching request."
+        details = "No further action is needed."
         n = Notification(
             account_id=coach_account.id,
             fav_category="relationship_request_deletion",
@@ -945,7 +945,7 @@ def pay_invoice(invoice_id: int, payload: PayInvoiceInput, db = Depends(get_sess
         account_id=coach_account.id,
         fav_category="payment_received",
         message=f"Payment received from {acc.name}",
-        details=f"{acc.name} paid ${payload.amount:.2f} towards invoice {invoice_id}.",
+        details=f"{acc.name} paid ${payload.amount:.2f} towards their current balance.",
     )
     db.add(notification)
     db.commit()

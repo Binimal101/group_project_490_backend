@@ -70,7 +70,9 @@ class PublicAccountSummary(BaseModel):
     age: Optional[int] = None
     gender: Optional[str] = None
     is_coach: bool = False
+    is_verified_coach: bool = False
     is_client: bool = False
+    is_admin: bool = False
 
 
 class ConversationSummary(BaseModel):
