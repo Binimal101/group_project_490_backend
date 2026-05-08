@@ -1,8 +1,8 @@
 from datetime import datetime, date, timedelta
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, Depends, Query
-from src.api.dependencies import get_coach_account, get_client_account, get_admin_account
+from src.api.dependencies import get_coach_account, get_client_account, get_admin_account, PaginationParams
 
 # query helpers
 from sqlmodel import select
@@ -29,6 +29,10 @@ from src.api.roles.coach.domain import (
     ClientReportResponse,
     ReportsResponse,
     CoachEarningsResponse,
+    PrescribeWorkoutPlanInput,
+    PrescribeWorkoutPlanResponse,
+    WorkoutActivityItem,
+    ClientPlanItem,
 )
 
 from src.database import coach
@@ -38,9 +42,10 @@ from src.database.coach_client_relationship.models import ClientCoachRequest, Cl
 from src.database.session import get_session
 from src.database.account.models import Account, Availability, Notification
 from src.database.telemetry.models import (
-    HealthMetrics, 
-    ClientTelemetry, 
+    HealthMetrics,
+    ClientTelemetry,
     StepCount,
+    CompletedSurvey,
     DailyMoodSurvey,
     DailyWorkoutSurvey,
     DailyBodyMetricsSurvey,
@@ -48,9 +53,10 @@ from src.database.telemetry.models import (
     DailyMealSurvey,
     CompletedMealActivity,
     CompletedWorkout,
+    DailyProgressPicture,
 )
 from src.database.coach.models import Coach, CoachCertifications, CoachExperience, CoachAvailability, Experience, Certifications
-from src.database.client.models import Client, FitnessGoals
+from src.database.client.models import Client, FitnessGoals, ClientWorkoutPlan
 from src.database.role_management.models import CoachRequest
 from src.database.reports.models import ClientReport
 
@@ -61,7 +67,7 @@ router = APIRouter(prefix="/roles/coach", tags=["coach"])
 @router.post("/request_coach_creation", response_model=CreateCoachRequestResponse)
 def create_coach_request(coach_details: CoachRequestInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
-    Creates a coach_request, and a coach record with verified=False, 
+    Creates a coach_request, and a coach record with verified=False,
     attaches certifications, experiences, and availability
     modifies user account to show coach_id=xxx
     Errors when a user has a coach_id
@@ -71,9 +77,9 @@ def create_coach_request(coach_details: CoachRequestInput, db = Depends(get_sess
     #client err thrown in DI scope
     if acc.coach_id is not None:
         raise HTTPException(409, detail="Cannot create a request for a coach role when one is open, or the role is given")
-    
+
     coach = Coach()
-    
+
     db.add(coach)
     db.add(coach_availability := CoachAvailability())
 
@@ -109,6 +115,10 @@ def create_coach_request(coach_details: CoachRequestInput, db = Depends(get_sess
     db.add(pricing_plan)
     db.flush()
 
+    # Persist the linkage from coach -> coach_availability so availability lookups work
+    coach.coach_availability = coach_availability.id
+    db.add(coach)
+
     db.commit()
 
     return CreateCoachRequestResponse(coach_request_id=cr.id, coach_id=coach.id) # type: ignore
@@ -121,16 +131,25 @@ def update_coach_info(new_coach_details: UpdateCoachInfoInput, db = Depends(get_
     Deletes existing certs, exps, and availabilities and replaces with new ones if the user provides them, otherwise leaves them as is
     Errors when user does not have a coach_id
     """
-    
+
     if coach_acc.id is None:
         raise HTTPException(404, detail="No coach profile found for this account")
-    
+
     coach = db.get(Coach, coach_acc.coach_id)
+    if coach is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
 
     # coach.coach_availability already stores the id; avoid an extra query
     coach_availability_id = coach.coach_availability
     if new_coach_details.availabilities is not None:
-        if coach_availability_id is not None:
+        if coach_availability_id is None:
+            coach_availability = CoachAvailability()
+            db.add(coach_availability)
+            db.flush()
+            coach.coach_availability = coach_availability.id
+            coach_availability_id = coach_availability.id
+            db.add(coach)
+        else:
             db.exec(delete(Availability).where(Availability.coach_availability_id == coach_availability_id))
         for a in new_coach_details.availabilities:
             a.coach_availability_id = coach_availability_id # type: ignore
@@ -151,9 +170,30 @@ def update_coach_info(new_coach_details: UpdateCoachInfoInput, db = Depends(get_
             db.add(e)
 
         db.flush()
-        
+
         for e in new_coach_details.experiences:
             db.add(CoachExperience(coach_id=coach.id, experience_id=e.id)) # type: ignore
+
+    if new_coach_details.specialties is not None:
+        coach.specialties = ",".join(new_coach_details.specialties)
+
+    if new_coach_details.pricing_plan is not None:
+        pp = new_coach_details.pricing_plan
+        # Close existing open plans
+        existing_plans = db.exec(
+            select(PricingPlan).where(PricingPlan.coach_id == coach.id, PricingPlan.open_to_entry == True)
+        ).all()
+        for ep in existing_plans:
+            ep.open_to_entry = False
+            db.add(ep)
+        # Create new pricing plan
+        new_plan = PricingPlan(
+            coach_id=coach.id,  # type: ignore
+            payment_interval=pp.payment_interval,
+            price_cents=pp.price_cents,
+            open_to_entry=True,
+        )
+        db.add(new_plan)
 
     db.flush()
     db.commit()
@@ -189,7 +229,7 @@ def create_workout(workout_details: WorkoutInput, db = Depends(get_session), acc
     """
     if acc.coach_id is None:
         raise HTTPException(404, detail="No coach profile found for this account")
-    
+
     workout = Workout(
         name=workout_details.name,
         description=workout_details.description,
@@ -259,6 +299,65 @@ def create_workout_plan(plan_details: WorkoutPlanInput, db = Depends(get_session
 
     return DunderResponse()
 
+@router.post("/prescribe_plan", response_model=PrescribeWorkoutPlanResponse)
+def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_coach_account)):
+    """
+    Assigns a workout plan to one of the coach's active clients.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+
+    plan = db.get(WorkoutPlan, payload.workout_plan_id)
+    if plan is None:
+        raise HTTPException(404, detail="Workout plan not found")
+
+    client = db.get(Client, payload.client_id)
+    if client is None:
+        raise HTTPException(404, detail="Client not found")
+
+    request = db.exec(select(ClientCoachRequest).where(
+        ClientCoachRequest.client_id == payload.client_id,
+        ClientCoachRequest.coach_id == acc.coach_id,
+        ClientCoachRequest.is_accepted == True
+    )).first()
+    if request is None or request.id is None:
+        raise HTTPException(403, detail="Coach does not have an active relationship with this client")
+
+    relationship = db.exec(select(ClientCoachRelationship).where(
+        ClientCoachRelationship.request_id == request.id,
+        ClientCoachRelationship.is_active == True,
+        ClientCoachRelationship.coach_blocked == False,
+        ClientCoachRelationship.client_blocked == False
+    )).first()
+    if relationship is None:
+        raise HTTPException(403, detail="Coach does not have an active relationship with this client")
+
+    client_workout_plan = ClientWorkoutPlan(
+        client_id=payload.client_id,
+        workout_plan_id=payload.workout_plan_id,
+        start_time=payload.start_dt,
+        end_time=payload.end_dt
+    )
+    db.add(client_workout_plan)
+    db.flush()
+
+    client_account = db.exec(select(Account).where(Account.client_id == payload.client_id)).first()
+    if client_account and client_account.id is not None:
+        db.add(Notification(
+            account_id=client_account.id,
+            fav_category="workout_plan",
+            message=f"{acc.name} prescribed a new workout plan.",
+            details=f"Workout plan {payload.workout_plan_id} is scheduled from {payload.start_dt.isoformat()} to {payload.end_dt.isoformat()}.",
+        ))
+
+    db.commit()
+    db.refresh(client_workout_plan)
+
+    if client_workout_plan.id is None:
+        raise HTTPException(500, detail="Something went wrong while prescribing the workout plan")
+
+    return PrescribeWorkoutPlanResponse(client_workout_plan_id=client_workout_plan.id)
+
 @router.get("/coach_availability/{coach_id}", response_model=CoachAvailabilityResponse)
 def get_coach_availability(coach_id: int, db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
@@ -266,14 +365,24 @@ def get_coach_availability(coach_id: int, db = Depends(get_session), acc: Accoun
     """
     if acc.client_id is None:
         raise HTTPException(404, detail="Please log in to view coach availability")
-    
+
     coach = db.get(Coach, coach_id)
     if coach is None:
         raise HTTPException(404, detail="Coach not found")
-    
-    if coach.verified == False:
+
+    coach_account = db.exec(
+        select(Account).where(
+            Account.coach_id == coach_id,
+            Account.is_active == True,
+        )
+    ).first()
+
+    if coach_account is None or coach.verified == False:
         raise HTTPException(404, detail="Coach is not verified yet, availability is not viewable")
-    
+
+    if coach.coach_availability is None:
+        return CoachAvailabilityResponse(coach_availabilities=[])
+
     availabilities = db.exec(select(Availability).where(Availability.coach_availability_id == coach.coach_availability)).all()
 
     return CoachAvailabilityResponse(coach_availabilities=availabilities)
@@ -281,20 +390,61 @@ def get_coach_availability(coach_id: int, db = Depends(get_session), acc: Accoun
 @router.get("/client_requests", response_model=RequestListResponse)
 def get_client_requests(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
     """
-    Gets the list of all client requests for a given coach
+    Gets the list of all pending client requests for a given coach.
     """
     if acc.coach_id is None:
         raise HTTPException(404, detail="No coach profile found for this account")
-    
-    # return pending client requests (is_accepted IS NULL)
+
+    # Get pending client requests (is_accepted IS NULL)
     requests = db.query(ClientCoachRequest).filter(
         ClientCoachRequest.coach_id == acc.coach_id,
         ClientCoachRequest.is_accepted.is_(None)  # pending
     ).all()
 
-    items = [{"client_id": r.client_id, "request_id": r.id} for r in requests]
+    items = []
+    for r in requests:
+        account = db.exec(select(Account).where(Account.client_id == r.client_id)).first()
+        fitness_goals = list(db.exec(select(FitnessGoals).where(FitnessGoals.client_id == r.client_id)).all())
+        base_account = None
+        if account:
+            base_account = {"id": account.id, "name": account.name, "email": account.email, "is_active": account.is_active, "gcp_user_id": account.gcp_user_id, "gender": account.gender, "bio": account.bio, "age": account.age, "pfp_url": account.pfp_url, "client_id": account.client_id, "coach_id": account.coach_id, "admin_id": account.admin_id, "created_at": account.created_at}
+        items.append({"client_id": r.client_id, "request_id": r.id, "base_account": base_account, "fitness_goals": fitness_goals})
 
     return items
+
+
+@router.get("/clients")
+def get_my_accepted_clients(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
+    """
+    Gets the list of all accepted clients for the authenticated coach.
+    Only returns clients with active relationships (accepted requests with active relationship).
+    Returns list of {relationship_id, client_id, request_id} objects.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+
+    # Get all accepted requests for this coach that have active relationships
+    requests = db.query(ClientCoachRequest).filter(
+        ClientCoachRequest.coach_id == acc.coach_id,
+        ClientCoachRequest.is_accepted == True
+    ).all()
+
+    clients = []
+    for request in requests:
+        # Check if relationship is active
+        relationship = db.exec(select(ClientCoachRelationship).where(
+            ClientCoachRelationship.request_id == request.id,
+            ClientCoachRelationship.is_active == True
+        )).first()
+
+        if relationship:
+            clients.append({
+                "relationship_id": relationship.id,
+                "client_id": request.client_id,
+                "request_id": request.id
+            })
+
+    return clients
 
 
 @router.get("/lookup_client/{client_id}", response_model=ClientLookupResponse)
@@ -382,10 +532,10 @@ def accept_coach_request(request_id: int, db = Depends(get_session), acc: Accoun
 
     if request is None:
         raise HTTPException(404, detail="Request not found")
-    
+
     if request.coach_id != acc.coach_id:
         raise HTTPException(403, detail="Not authorized to accept this request")
-    
+
     # update existing request rather than inserting a new row with the same PK
     request.is_accepted = True
     db.add(request)
@@ -436,7 +586,7 @@ def accept_coach_request(request_id: int, db = Depends(get_session), acc: Accoun
         db.add(Notification(account_id=coach_account.id, fav_category="payment", message=f"Your client was invoiced ${amount:.2f}.", details=f"Invoice {invoice.id} for client {request.client_id}."))
 
     db.commit()
-    
+
     if relationship.id is None:
         raise HTTPException(500, detail="Something went wrong when accepting the request")
 
@@ -451,10 +601,10 @@ def deny_client_request(request_id: int, db = Depends(get_session), acc: Account
 
     if request is None:
         raise HTTPException(404, detail="Request not found")
-    
+
     if request.coach_id != acc.coach_id:
         raise HTTPException(403, detail="Not authorized to deny this request")
-    
+
     # update existing request to mark as denied
     request.is_accepted = False
     db.add(request)
@@ -485,10 +635,10 @@ def client_review(client_id: int, report_summary: str, db = Depends(get_session)
 
     if acc.id is None:
         raise HTTPException(404, detail="Account not found")
-    
+
     if acc.coach_id is None:
         raise HTTPException(403, detail="Not authorized to use this feature")
-    
+
     report = ClientReport(coach_id=acc.coach_id, client_id=client_id, report_summary=report_summary)
 
     db.add(report)
@@ -497,7 +647,7 @@ def client_review(client_id: int, report_summary: str, db = Depends(get_session)
 
     if report.id is None:
         raise HTTPException(500, detail="Something went wrong while creating the report")
-    
+
     return ClientReportResponse(report_id=report.id)
 
 
@@ -509,10 +659,10 @@ def get_reports(client_id: int, db = Depends(get_session), acc: Account = Depend
 
     if acc.id is None:
         raise HTTPException(404, detail="Account not found")
-    
+
     if acc.coach_id is None:
         raise HTTPException(403, detail="You are not authorized to view this content")
-    
+
     reports = db.query(ClientReport).filter(ClientReport.client_id == client_id).all()
 
     return ReportsResponse(reports=reports)
@@ -528,7 +678,7 @@ def get_coach_earnings(
     """
     if acc.coach_id is None:
         raise HTTPException(403, detail="Not authorized")
-    
+
     # an invoice represents earnings. (Amount - outstanding_balance) is the paid amount.
     query = (
         select(func.sum(Invoice.amount - Invoice.outstanding_balance))
@@ -547,7 +697,11 @@ def get_coach_earnings(
     return CoachEarningsResponse(total_earnings=total, since=since)
 
 @router.get("/my_clients")
-def get_my_clients(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
+def get_my_clients(
+    pagination: PaginationParams = Depends(PaginationParams),
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
     """
     Returns all active clients for the logged-in coach.
     Includes Client, Account without password, and telemetry objects.
@@ -561,89 +715,94 @@ def get_my_clients(db = Depends(get_session), acc: Account = Depends(get_coach_a
         .join(ClientCoachRelationship, ClientCoachRelationship.request_id == ClientCoachRequest.id)
         .where(
             ClientCoachRequest.coach_id == acc.coach_id,
-            ClientCoachRequest.is_accepted == True,
-            ClientCoachRelationship.is_active == True,
-            ClientCoachRelationship.client_blocked == False,
-            ClientCoachRelationship.coach_blocked == False,
+            ClientCoachRequest.is_accepted.is_(True),
+            ClientCoachRelationship.is_active.is_(True),
+            ClientCoachRelationship.client_blocked.is_(False),
+            ClientCoachRelationship.coach_blocked.is_(False),
         )
+        .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
+        .offset(pagination.skip)
+        .limit(pagination.limit)
     ).all()
 
+    client_ids = [request.client_id for request, relationship in relationships]
+    if not client_ids:
+        return []
+
+    client_rows = db.exec(select(Client).where(Client.id.in_(client_ids))).all()
+    clients_by_id = {client.id: client for client in client_rows}
+
+    account_rows = db.exec(select(Account).where(Account.client_id.in_(client_ids))).all()
+    accounts_by_client_id = {account.client_id: account for account in account_rows}
+
+    telemetry_records = db.exec(
+        select(ClientTelemetry)
+        .where(ClientTelemetry.client_id.in_(client_ids))
+        .order_by(ClientTelemetry.date.desc())
+    ).all()
+
+    telemetry_by_client_id: dict[int, list[ClientTelemetry]] = {}
+    telemetry_ids: list[int] = []
+    for telemetry_record in telemetry_records:
+        telemetry_by_client_id.setdefault(telemetry_record.client_id, []).append(telemetry_record)
+        if telemetry_record.id is not None:
+            telemetry_ids.append(telemetry_record.id)
+
+    def group_by_telemetry_id(rows):
+        grouped = {}
+        for row in rows:
+            grouped.setdefault(row.client_telemetry_id, []).append(row)
+        return grouped
+
+    if telemetry_ids:
+        health_metrics_by_telemetry = group_by_telemetry_id(
+            db.exec(select(HealthMetrics).where(HealthMetrics.client_telemetry_id.in_(telemetry_ids))).all()
+        )
+        step_counts_by_telemetry = group_by_telemetry_id(
+            db.exec(select(StepCount).where(StepCount.client_telemetry_id.in_(telemetry_ids))).all()
+        )
+        mood_surveys_by_telemetry = group_by_telemetry_id(
+            db.exec(select(DailyMoodSurvey).where(DailyMoodSurvey.client_telemetry_id.in_(telemetry_ids))).all()
+        )
+        workout_surveys_by_telemetry = group_by_telemetry_id(
+            db.exec(select(DailyWorkoutSurvey).where(DailyWorkoutSurvey.client_telemetry_id.in_(telemetry_ids))).all()
+        )
+        body_metrics_surveys_by_telemetry = group_by_telemetry_id(
+            db.exec(select(DailyBodyMetricsSurvey).where(DailyBodyMetricsSurvey.client_telemetry_id.in_(telemetry_ids))).all()
+        )
+        steps_surveys_by_telemetry = group_by_telemetry_id(
+            db.exec(select(DailyStepsSurvey).where(DailyStepsSurvey.client_telemetry_id.in_(telemetry_ids))).all()
+        )
+        meal_surveys_by_telemetry = group_by_telemetry_id(
+            db.exec(select(DailyMealSurvey).where(DailyMealSurvey.client_telemetry_id.in_(telemetry_ids))).all()
+        )
+        completed_meals_by_telemetry = group_by_telemetry_id(
+            db.exec(select(CompletedMealActivity).where(CompletedMealActivity.client_telemetry_id.in_(telemetry_ids))).all()
+        )
+        completed_workouts_by_telemetry = group_by_telemetry_id(
+            db.exec(select(CompletedWorkout).where(CompletedWorkout.client_telemetry_id.in_(telemetry_ids))).all()
+        )
+    else:
+        health_metrics_by_telemetry = {}
+        step_counts_by_telemetry = {}
+        mood_surveys_by_telemetry = {}
+        workout_surveys_by_telemetry = {}
+        body_metrics_surveys_by_telemetry = {}
+        steps_surveys_by_telemetry = {}
+        meal_surveys_by_telemetry = {}
+        completed_meals_by_telemetry = {}
+        completed_workouts_by_telemetry = {}
+
     clients = []
-
     for request, relationship in relationships:
-        client = db.get(Client, request.client_id)
-
-        account = db.exec(
-            select(Account).where(Account.client_id == request.client_id)
-        ).first()
-
-        telemetry_records = db.exec(
-            select(ClientTelemetry)
-            .where(ClientTelemetry.client_id == request.client_id)
-            .order_by(ClientTelemetry.date.desc())
-        ).all()
-
-        telemetry = []
-
-        for t in telemetry_records:
-            health_metrics = db.exec(
-                select(HealthMetrics).where(HealthMetrics.client_telemetry_id == t.id)
-            ).all()
-
-            step_counts = db.exec(
-                select(StepCount).where(StepCount.client_telemetry_id == t.id)
-            ).all()
-
-            mood_surveys = db.exec(
-                select(DailyMoodSurvey).where(DailyMoodSurvey.client_telemetry_id == t.id)
-            ).all()
-
-            workout_surveys = db.exec(
-                select(DailyWorkoutSurvey).where(DailyWorkoutSurvey.client_telemetry_id == t.id)
-            ).all()
-
-            body_metrics_surveys = db.exec(
-                select(DailyBodyMetricsSurvey).where(DailyBodyMetricsSurvey.client_telemetry_id == t.id)
-            ).all()
-
-            steps_surveys = db.exec(
-                select(DailyStepsSurvey).where(DailyStepsSurvey.client_telemetry_id == t.id)
-            ).all()
-
-            meal_surveys = db.exec(
-                select(DailyMealSurvey).where(DailyMealSurvey.client_telemetry_id == t.id)
-            ).all()
-
-            completed_meals = db.exec(
-                select(CompletedMealActivity).where(CompletedMealActivity.client_telemetry_id == t.id)
-            ).all()
-
-            completed_workouts = db.exec(
-                select(CompletedWorkout).where(CompletedWorkout.client_telemetry_id == t.id)
-            ).all()
-
-            telemetry.append({
-                "client_telemetry": t,
-                "health_metrics": health_metrics,
-                "step_counts": step_counts,
-                "mood_surveys": mood_surveys,
-                "workout_surveys": workout_surveys,
-                "body_metrics_surveys": body_metrics_surveys,
-                "steps_surveys": steps_surveys,
-                "meal_surveys": meal_surveys,
-                "completed_meals": completed_meals,
-                "completed_workouts": completed_workouts,
-            })
-
+        account = accounts_by_client_id.get(request.client_id)
         safe_account = None
-
         if account:
             safe_account = {
                 "id": account.id,
                 "name": account.name,
                 "email": account.email,
                 "is_active": account.is_active,
-                "status": account.status,
                 "gender": account.gender,
                 "bio": account.bio,
                 "age": account.age,
@@ -654,12 +813,342 @@ def get_my_clients(db = Depends(get_session), acc: Account = Depends(get_coach_a
                 "created_at": account.created_at,
             }
 
+        telemetry = []
+        for telemetry_record in telemetry_by_client_id.get(request.client_id, []):
+            telemetry_id = telemetry_record.id
+            telemetry.append({
+                "client_telemetry": telemetry_record,
+                "health_metrics": health_metrics_by_telemetry.get(telemetry_id, []),
+                "step_counts": step_counts_by_telemetry.get(telemetry_id, []),
+                "mood_surveys": mood_surveys_by_telemetry.get(telemetry_id, []),
+                "workout_surveys": workout_surveys_by_telemetry.get(telemetry_id, []),
+                "body_metrics_surveys": body_metrics_surveys_by_telemetry.get(telemetry_id, []),
+                "steps_surveys": steps_surveys_by_telemetry.get(telemetry_id, []),
+                "meal_surveys": meal_surveys_by_telemetry.get(telemetry_id, []),
+                "completed_meals": completed_meals_by_telemetry.get(telemetry_id, []),
+                "completed_workouts": completed_workouts_by_telemetry.get(telemetry_id, []),
+            })
+
         clients.append({
             "relationship_id": relationship.id,
             "request_id": request.id,
-            "client": client,
+            "client": clients_by_id.get(request.client_id),
             "account": safe_account,
             "telemetry": telemetry,
         })
 
     return clients
+
+# ─── Coach-view client telemetry & schedule ──────────────────────────────────
+
+def _authorize_coach_for_client(db, coach_id: int, client_id: int) -> None:
+    """Raise 403 unless the coach has a pending request or active relationship with the client."""
+    pending = db.exec(
+        select(ClientCoachRequest).where(
+            ClientCoachRequest.client_id == client_id,
+            ClientCoachRequest.coach_id == coach_id,
+            ClientCoachRequest.is_accepted.is_(None),
+        )
+    ).first()
+    if pending:
+        return
+
+    accepted = db.exec(
+        select(ClientCoachRequest).where(
+            ClientCoachRequest.client_id == client_id,
+            ClientCoachRequest.coach_id == coach_id,
+        )
+    ).first()
+    if accepted:
+        rel = db.exec(
+            select(ClientCoachRelationship).where(
+                ClientCoachRelationship.request_id == accepted.id,
+                ClientCoachRelationship.is_active == True,
+                ClientCoachRelationship.coach_blocked == False,
+                ClientCoachRelationship.client_blocked == False,
+            )
+        ).first()
+        if rel:
+            return
+
+    raise HTTPException(403, detail="Not authorized to view this client's data")
+
+
+@router.get(
+    "/client_telemetry/{client_id}/weights",
+    response_model=list[HealthMetrics],
+    tags=["coach", "client-telemetry"],
+)
+def get_client_weight_history(
+    client_id: int,
+    pagination: PaginationParams = Depends(PaginationParams),
+    db=Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """
+    Return paginated body-weight history for a specific client.
+
+    The coach must hold a pending request or an active relationship with the
+    client. Results are ordered newest first.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    _authorize_coach_for_client(db, acc.coach_id, client_id)
+
+    query = (
+        select(HealthMetrics)
+        .join(ClientTelemetry, HealthMetrics.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == client_id)
+        .order_by(HealthMetrics.id.desc())
+    )
+    return db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+
+
+@router.get(
+    "/client_telemetry/{client_id}/moods",
+    response_model=list[CompletedSurvey],
+    tags=["coach", "client-telemetry"],
+)
+def get_client_mood_history(
+    client_id: int,
+    pagination: PaginationParams = Depends(PaginationParams),
+    db=Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """
+    Return paginated mood / wellbeing survey history for a specific client.
+
+    The coach must hold a pending request or an active relationship with the
+    client. Results are ordered newest first.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    _authorize_coach_for_client(db, acc.coach_id, client_id)
+
+    query = (
+        select(CompletedSurvey)
+        .join(DailyMoodSurvey, DailyMoodSurvey.completed_survey_id == CompletedSurvey.id)
+        .join(ClientTelemetry, DailyMoodSurvey.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == client_id)
+        .order_by(CompletedSurvey.id.desc())
+    )
+    return db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+
+
+@router.get(
+    "/client_telemetry/{client_id}/steps",
+    response_model=list[StepCount],
+    tags=["coach", "client-telemetry"],
+)
+def get_client_step_history(
+    client_id: int,
+    pagination: PaginationParams = Depends(PaginationParams),
+    db=Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """
+    Return paginated step-count history for a specific client.
+
+    The coach must hold a pending request or an active relationship with the
+    client. Results are ordered newest first.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    _authorize_coach_for_client(db, acc.coach_id, client_id)
+
+    query = (
+        select(StepCount)
+        .join(ClientTelemetry, StepCount.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == client_id)
+        .order_by(StepCount.id.desc())
+    )
+    return db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+
+
+@router.get(
+    "/client_telemetry/{client_id}/workouts",
+    response_model=list[CompletedWorkout],
+    tags=["coach", "client-telemetry"],
+)
+def get_client_workout_history(
+    client_id: int,
+    pagination: PaginationParams = Depends(PaginationParams),
+    db=Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """
+    Return paginated completed-workout history for a specific client.
+
+    The coach must hold a pending request or an active relationship with the
+    client. Results are ordered newest first.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    _authorize_coach_for_client(db, acc.coach_id, client_id)
+
+    query = (
+        select(CompletedWorkout)
+        .join(ClientTelemetry, CompletedWorkout.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == client_id)
+        .order_by(CompletedWorkout.id.desc())
+    )
+    return db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+
+
+@router.get(
+    "/client_progress_pictures/{client_id}",
+    response_model=list[DailyProgressPicture],
+    tags=["coach", "client-telemetry"],
+)
+def get_client_progress_pictures(
+    client_id: int,
+    pagination: PaginationParams = Depends(PaginationParams),
+    db=Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """
+    Return paginated progress pictures for a specific client.
+
+    The coach must hold a pending request or an active relationship with the
+    client. Results are ordered newest first.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    _authorize_coach_for_client(db, acc.coach_id, client_id)
+
+    query = (
+        select(DailyProgressPicture)
+        .join(ClientTelemetry, DailyProgressPicture.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == client_id)
+        .order_by(DailyProgressPicture.id.desc())
+    )
+    return db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+
+
+@router.get(
+    "/client_meals/{client_id}",
+    response_model=list[CompletedMealActivity],
+    tags=["coach", "client-telemetry"],
+)
+def get_client_meal_history(
+    client_id: int,
+    pagination: PaginationParams = Depends(PaginationParams),
+    db=Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """
+    Return paginated logged-meal history for a specific client.
+
+    The coach must hold a pending request or an active relationship with the
+    client. Results are ordered newest first.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    _authorize_coach_for_client(db, acc.coach_id, client_id)
+
+    query = (
+        select(CompletedMealActivity)
+        .join(ClientTelemetry, CompletedMealActivity.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == client_id)
+        .order_by(CompletedMealActivity.id.desc())
+    )
+    return db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+
+
+@router.get(
+    "/client_availability/{client_id}",
+    response_model=list[Availability],
+    tags=["coach", "client-telemetry"],
+)
+def get_client_availability(
+    client_id: int,
+    db=Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """
+    Return the availability slots for a specific client.
+
+    The coach must hold a pending request or an active relationship with the
+    client.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    _authorize_coach_for_client(db, acc.coach_id, client_id)
+
+    client = db.get(Client, client_id)
+    if client is None:
+        raise HTTPException(404, detail="Client not found")
+
+    if client.client_availability_id is None:
+        return []
+
+    return db.exec(
+        select(Availability).where(
+            Availability.client_availability_id == client.client_availability_id
+        )
+    ).all()
+
+
+@router.get(
+    "/client_plans/{client_id}",
+    response_model=list[ClientPlanItem],
+    tags=["coach", "client-telemetry"],
+)
+def get_client_workout_plans(
+    client_id: int,
+    pagination: PaginationParams = Depends(PaginationParams),
+    db=Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """
+    Return the workout plans prescribed to a client, with enriched activity details
+    (plan name, sets, reps, intensity) drawn from the linked workout activities.
+
+    The coach must hold a pending request or an active relationship with the
+    client. Results are paginated at the plan level.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    _authorize_coach_for_client(db, acc.coach_id, client_id)
+
+    client_plans = db.exec(
+        select(ClientWorkoutPlan)
+        .where(ClientWorkoutPlan.client_id == client_id)
+        .offset(pagination.skip)
+        .limit(pagination.limit)
+    ).all()
+
+    result: list[ClientPlanItem] = []
+    for cwp in client_plans:
+        plan = db.get(WorkoutPlan, cwp.workout_plan_id)
+        if plan is None:
+            continue
+
+        plan_activities = db.exec(
+            select(WorkoutPlanActivity).where(
+                WorkoutPlanActivity.workout_plan_id == plan.id
+            )
+        ).all()
+
+        activities: list[WorkoutActivityItem] = []
+        for wpa in plan_activities:
+            wa = db.get(WorkoutActivity, wpa.workout_activity_id)
+            if wa is None:
+                continue
+            workout = db.get(Workout, wa.workout_id)
+            if workout is None:
+                continue
+            activities.append(
+                WorkoutActivityItem(
+                    id=wpa.id,
+                    name=workout.name,
+                    suggested_sets=wpa.planned_sets,
+                    suggested_reps=wpa.planned_reps,
+                    intensity_value=wa.intensity_value,
+                    intensity_measure=wa.intensity_measure,
+                )
+            )
+
+        result.append(ClientPlanItem(strata_name=plan.strata_name, activities=activities))
+
+    return result

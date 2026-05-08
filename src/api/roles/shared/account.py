@@ -1,63 +1,266 @@
 from fastapi import APIRouter, Depends, UploadFile, HTTPException
-import requests
-from src import config
 
+from src.database.admin.models import Admin
 from src.database.session import get_session
 from src.database.account.models import Account, Availability, Notification
 from src.database.client.models import Client, FitnessGoals
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.payment.models import PricingPlan, PaymentInformation, Subscription, BillingCycle, Invoice
-from src.database.telemetry.models import HealthMetrics, ClientTelemetry
+from src.database.telemetry.models import (
+    HealthMetrics, ClientTelemetry, DailyProgressPicture,
+    CompletedMealActivity, CompletedWorkout,
+)
+from src.database.coach_client_relationship.models import (
+    ClientCoachRelationship, ClientCoachRequest, ChatMessage,
+)
+from src.database.meal.models import Meal, ClientPrescribedMeal, MealIngredient
+from src.database.workouts_and_activities.models import WorkoutPlanActivity
+from src.database.role_management.models import RolePromotionResolution, CoachRequest
+from src.database.reports.models import CoachReviews
+from src.api.dependencies import get_active_account, get_account_even_if_inactive
+from src.api.storage import upload_public_file_to_supabase
+from src.api.roles.shared.domain import FullProfileResponse, AccountResponse, UpdateAccountInput
+from sqlmodel import Session, select, desc, func, delete, or_
+from src.database.telemetry.models import HealthMetrics, ClientTelemetry, DailyProgressPicture
 from src.database.coach_client_relationship.models import ClientCoachRelationship, ClientCoachRequest
+from src.database.reports.models import CoachReviews
+from src.database.role_management.models import RolePromotionResolution, CoachRequest
 from src.api.dependencies import get_account_from_bearer, get_active_account, get_account_even_if_inactive
-from sqlmodel import Session, select
+from src.api.storage import upload_public_file_to_supabase
+from src.api.roles.shared.domain import FullProfileResponse, AccountResponse, UpdateAccountInput
+from sqlmodel import Session, select, desc, func
+from sqlalchemy import or_
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 router = APIRouter(prefix="/roles/shared/account", tags=["shared", "account"])
+
+
+@router.get("/me", response_model=FullProfileResponse)
+def get_full_profile(
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """
+    Returns a unified profile object with account info, roles, and role-specific details
+    (fitness goals, availability, coach certifications/experience, etc.)
+    """
+    roles: List[str] = []
+    client_details = None
+    coach_details = None
+
+    if acc.client_id is not None:
+        roles.append("client")
+        client = db.get(Client, acc.client_id)
+        if client:
+            goals = db.exec(select(FitnessGoals).where(FitnessGoals.client_id == client.id)).all()
+            fitness_goals_out = [
+                getattr(g.goal_enum, "value", g.goal_enum)
+                for g in goals
+                if g.goal_enum
+            ]
+            primary_goal = fitness_goals_out[0] if fitness_goals_out else None
+            availabilities = db.exec(select(Availability).where(Availability.client_availability_id == client.client_availability_id)).all()
+
+            # Payment information (censored)
+            payment_info = None
+            if client.payment_information_id:
+                pi = db.get(PaymentInformation, client.payment_information_id)
+                if pi:
+                    payment_info = {
+                        "id": pi.id,
+                        "last_four": str(pi.ccnum)[-4:] if pi.ccnum else "",
+                        "cv": "***",
+                        "exp_date": str(pi.exp_date) if pi.exp_date else "",
+                        "ccnum": pi.ccnum,
+                    }
+
+            # Active subscriptions with coach name
+            subscriptions_out = []
+            subs = db.exec(
+                select(Subscription, PricingPlan, Account)
+                .join(PricingPlan, Subscription.pricing_plan_id == PricingPlan.id)
+                .join(Account, PricingPlan.coach_id == Account.coach_id)
+                .where(Subscription.client_id == client.id)
+                .order_by(desc(Subscription.id))
+            ).all()
+            for sub, plan, coach_acc_row in subs:
+                subscriptions_out.append({
+                    "id": sub.id,
+                    "coach_id": plan.coach_id,
+                    "coach_name": coach_acc_row.name,
+                    "status": sub.status,
+                    "start_date": str(sub.start_date) if sub.start_date else None,
+                    "canceled_at": str(sub.canceled_at) if sub.canceled_at else None,
+                    "payment_interval": plan.payment_interval,
+                    "price_cents": plan.price_cents,
+                })
+
+            # Invoices
+            invoices_out = []
+            invoices = db.exec(
+                select(Invoice, BillingCycle, PricingPlan, Account)
+                .join(BillingCycle, Invoice.billing_cycle_id == BillingCycle.id)
+                .join(PricingPlan, BillingCycle.pricing_plan_id == PricingPlan.id)
+                .join(Account, PricingPlan.coach_id == Account.coach_id)
+                .where(Invoice.client_id == client.id)
+                .order_by(desc(Invoice.id))
+            ).all()
+            for inv, cycle, plan, coach_acc_row in invoices:
+                invoices_out.append({
+                    "invoice_id": inv.id,
+                    "amount": inv.amount,
+                    "outstanding_balance": inv.outstanding_balance,
+                    "coach_name": coach_acc_row.name,
+                    "entry_date": str(cycle.entry_date),
+                    "end_date": str(cycle.end_date),
+                })
+
+            # Active billing cycles
+            billing_cycles_out = []
+            cycles = db.exec(
+                select(BillingCycle, PricingPlan, Account)
+                .join(Subscription, BillingCycle.subscription_id == Subscription.id)
+                .join(PricingPlan, BillingCycle.pricing_plan_id == PricingPlan.id)
+                .join(Account, PricingPlan.coach_id == Account.coach_id)
+                .where(
+                    Subscription.client_id == client.id,
+                    Subscription.status == "active",
+                    BillingCycle.active == True,
+                )
+                .order_by(desc(BillingCycle.id))
+            ).all()
+            for cycle, plan, coach_acc_row in cycles:
+                billing_cycles_out.append({
+                    "coach_name": coach_acc_row.name,
+                    "entry_date": str(cycle.entry_date),
+                    "end_date": str(cycle.end_date),
+                    "price_cents": plan.price_cents,
+                    "payment_interval": plan.payment_interval,
+                })
+
+            # Progress pictures from DailyProgressPicture (one per day, upserted)
+            progress_pics_out = []
+            pics = db.exec(
+                select(DailyProgressPicture, ClientTelemetry)
+                .join(ClientTelemetry, DailyProgressPicture.client_telemetry_id == ClientTelemetry.id)
+                .where(ClientTelemetry.client_id == client.id)
+                .order_by(desc(DailyProgressPicture.id))
+            ).all()
+            for dpp, ct in pics:
+                progress_pics_out.append({
+                    "id": dpp.id,
+                    "client_telemetry_id": ct.id,
+                    "url": dpp.url,
+                    "date": str(ct.date) if ct.date else None,
+                })
+
+            client_details = {
+                "id": client.id,
+                "primary_goal": primary_goal,
+                "fitness_goals": fitness_goals_out,
+                "availabilities": availabilities,
+                "payment_information": payment_info,
+                "subscriptions": subscriptions_out,
+                "invoices": invoices_out,
+                "billing_cycles": billing_cycles_out,
+                "progress_pictures": progress_pics_out,
+            }
+
+    if acc.coach_id is not None:
+        coach = db.get(Coach, acc.coach_id)
+        if coach:
+            if coach.verified:
+                roles.append("coach")
+            else:
+                roles.append("coach_pending_or_denied")
+
+            certs = db.exec(
+                select(Certifications)
+                .join(CoachCertifications)
+                .where(CoachCertifications.coach_id == coach.id)
+            ).all()
+
+            exps = db.exec(
+                select(Experience)
+                .join(CoachExperience)
+                .where(Experience.id == CoachExperience.experience_id)
+                .where(CoachExperience.coach_id == coach.id)
+            ).all()
+
+            availabilities = db.exec(select(Availability).where(Availability.coach_availability_id == coach.coach_availability)).all()
+
+            pricing = db.exec(select(PricingPlan).where(PricingPlan.coach_id == coach.id).order_by(desc(PricingPlan.id))).first()
+
+            # Client count (active relationships)
+            client_count = db.exec(
+                select(func.count())
+                .select_from(ClientCoachRelationship)
+                .join(ClientCoachRequest, ClientCoachRelationship.request_id == ClientCoachRequest.id)
+                .where(ClientCoachRequest.coach_id == coach.id, ClientCoachRelationship.is_active == True)
+            ).one()
+
+            # Earnings: sum of paid invoice amounts
+            total_earnings_raw = db.exec(
+                select(func.coalesce(func.sum(Invoice.amount - Invoice.outstanding_balance), 0))
+                .join(BillingCycle, Invoice.billing_cycle_id == BillingCycle.id)
+                .join(PricingPlan, BillingCycle.pricing_plan_id == PricingPlan.id)
+                .where(PricingPlan.coach_id == coach.id)
+            ).one()
+            total_earnings = float(total_earnings_raw or 0)
+
+            # Rating
+            avg_rating_raw = db.exec(
+                select(func.avg(CoachReviews.rating)).where(CoachReviews.coach_id == coach.id)
+            ).one()
+            review_count = db.exec(
+                select(func.count()).select_from(CoachReviews).where(CoachReviews.coach_id == coach.id)
+            ).one()
+
+            coach_details = {
+                "id": coach.id,
+                "verified": coach.verified,
+                "specialties": coach.specialties.split(",") if coach.specialties else [],
+                "certifications": certs,
+                "experiences": exps,
+                "availabilities": availabilities,
+                "pricing": pricing,
+                "client_count": client_count or 0,
+                "total_earnings": total_earnings,
+                "avg_rating": round(float(avg_rating_raw), 1) if avg_rating_raw else 0,
+                "review_count": review_count or 0,
+                "joined_date": str(acc.created_at) if acc.created_at else None,
+            }
+
+    if acc.admin_id is not None:
+        roles.append("admin")
+
+    return FullProfileResponse(
+        account=acc,
+        roles=roles,
+        client_details=client_details,
+        coach_details=coach_details,
+    )
 
 
 @router.post("/update_pfp")
 def update_profile_picture(
     file: UploadFile,
     db: Session = Depends(get_session),
-    acc: Account = Depends(get_account_from_bearer),
+    acc: Account = Depends(get_active_account),
 ):
     """
     Uploads the provided file to the `profile_picture` bucket and updates the
     current account's `pfp_url` to the public URL for the uploaded object.
     """
-    import os
-
-    SUPABASE_URL = config.SUPABASE_URL or os.getenv("SUPABASE_URL")
-    SUPABASE_SERVICE_KEY = config.SUPABASE_SERVICE_KEY or os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
-
-    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        raise HTTPException(500, detail="Supabase storage is not configured on the server")
-
-    bucket = "profile_picture"
-    filename = f"{acc.id}_{file.filename}"
-    upload_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{bucket}/{filename}"
-
-    headers = {
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "apikey": SUPABASE_SERVICE_KEY,
-    }
-
-    try:
-        # stream upload
-        resp = requests.put(upload_url, data=file.file, headers=headers)
-    except Exception as e:
-        raise HTTPException(500, detail=f"Upload failed: {e}")
-
-    if resp.status_code not in (200, 201, 204):
-        raise HTTPException(resp.status_code, detail=f"Upload failed: {resp.text}")
-
-    public_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{bucket}/{filename}"
+    public_url = upload_public_file_to_supabase(file, "profile_picture", str(acc.id))
 
     # persist to account
     account = db.get(Account, acc.id)
+    if account is None:
+        raise HTTPException(404, detail="Account not found")
+
     account.pfp_url = public_url
     db.add(account)
     db.commit()
@@ -67,6 +270,7 @@ def update_profile_picture(
 
 
 class UpdateAccountInput(BaseModel):
+    name: Optional[str] = None
     age: Optional[int] = None
     email: Optional[EmailStr] = None
     bio: Optional[str] = None
@@ -98,6 +302,9 @@ class ActivateAccountResponse(BaseModel):
 
 
 def get_affected_accounts(db: Session, account: Account) -> list[Account]:
+    """
+    Finds active client-coach relationship accounts affected by account deactivation.
+    """
     affected_accounts_by_id: dict[int, Account] = {}
 
     def add_affected_account(affected_account: Account | None):
@@ -109,8 +316,9 @@ def get_affected_accounts(db: Session, account: Account) -> list[Account]:
 
     # If the deactivated account is a client, notify their active coach(es)
     if account.client_id is not None:
-        relationships = db.exec(
-            select(ClientCoachRequest, ClientCoachRelationship)
+        coach_accounts = db.exec(
+            select(Account)
+            .join(ClientCoachRequest, ClientCoachRequest.coach_id == Account.coach_id)
             .join(
                 ClientCoachRelationship,
                 ClientCoachRelationship.request_id == ClientCoachRequest.id,
@@ -121,17 +329,14 @@ def get_affected_accounts(db: Session, account: Account) -> list[Account]:
             )
         ).all()
 
-        for request, relationship in relationships:
-            coach_account = db.exec(
-                select(Account).where(Account.coach_id == request.coach_id)
-            ).first()
-
+        for coach_account in coach_accounts:
             add_affected_account(coach_account)
 
     # If the deactivated account is a coach, notify their active client(s)
     if account.coach_id is not None:
-        relationships = db.exec(
-            select(ClientCoachRequest, ClientCoachRelationship)
+        client_accounts = db.exec(
+            select(Account)
+            .join(ClientCoachRequest, ClientCoachRequest.client_id == Account.client_id)
             .join(
                 ClientCoachRelationship,
                 ClientCoachRelationship.request_id == ClientCoachRequest.id,
@@ -142,11 +347,7 @@ def get_affected_accounts(db: Session, account: Account) -> list[Account]:
             )
         ).all()
 
-        for request, relationship in relationships:
-            client_account = db.exec(
-                select(Account).where(Account.client_id == request.client_id)
-            ).first()
-
+        for client_account in client_accounts:
             add_affected_account(client_account)
 
     return list(affected_accounts_by_id.values())
@@ -157,22 +358,28 @@ def notify_affected_accounts(
     deactivated_account: Account,
     affected_accounts: list[Account],
 ):
+    """
+    Creates notification records for accounts affected by a user's deactivation.
+    """
+    role = "account"
+    if deactivated_account.client_id is not None:
+        role = "client"
+    elif deactivated_account.coach_id is not None:
+        role = "coach"
+
+    message = f"{deactivated_account.name} has deactivated their account."
+    details = f"{role.capitalize()} account {deactivated_account.id} was deactivated."
+
     for affected_account in affected_accounts:
         if affected_account.id is None:
             continue
-
-        role = "account"
-        if deactivated_account.client_id is not None:
-            role = "client"
-        elif deactivated_account.coach_id is not None:
-            role = "coach"
 
         db.add(
             Notification(
                 account_id=affected_account.id,
                 fav_category="account_deactivated",
-                message=f"{deactivated_account.name} has deactivated their account.",
-                details=f"{role.capitalize()} account {deactivated_account.id} was deactivated.",
+                message=message,
+                details=details,
                 is_read=False,
             )
         )
@@ -212,6 +419,58 @@ def delete_client_coach_mappings(db: Session, account: Account):
                 db.delete(relationship)
 
             db.delete(request)
+
+
+def delete_role_promotion_records(db: Session, account: Account):
+    """
+    Remove role-promotion records that reference the account being deleted.
+    CoachRequest rows point at RolePromotionResolution, so clear those links before
+    deleting the resolution rows.
+    """
+    if account.coach_id is not None:
+        coach_requests = db.exec(
+            select(CoachRequest).where(CoachRequest.coach_id == account.coach_id)
+        ).all()
+
+        for coach_request in coach_requests:
+            db.delete(coach_request)
+
+    if account.admin_id is not None:
+        resolution_query = select(RolePromotionResolution).where(
+            or_(
+                RolePromotionResolution.account_id == account.id,
+                RolePromotionResolution.admin_id == account.admin_id,
+            )
+        )
+    else:
+        resolution_query = select(RolePromotionResolution).where(
+            RolePromotionResolution.account_id == account.id
+        )
+
+    resolutions = db.exec(resolution_query).all()
+    resolution_ids = [
+        resolution.id for resolution in resolutions if resolution.id is not None
+    ]
+
+    if resolution_ids:
+        linked_requests = db.exec(
+            select(CoachRequest).where(
+                CoachRequest.role_promotion_resolution_id.in_(resolution_ids)
+            )
+        ).all()
+
+        for linked_request in linked_requests:
+            linked_request.role_promotion_resolution_id = None
+            db.add(linked_request)
+
+    for resolution in resolutions:
+        db.delete(resolution)
+
+
+class DeleteAccountResponse(BaseModel):
+    success: bool
+    message: str
+
 
 @router.post("/deactivate", response_model=DeactivateAccountResponse)
 def deactivate_account(
@@ -257,7 +516,7 @@ def activate_account(
     acc: Account = Depends(get_account_even_if_inactive),
 ):
     """
-    Activate the current user's account. This sets is_active to True and allows login/access.
+    Reactivate the current user's account. This sets is_active to True and allows login/access.
     """
     account = db.get(Account, acc.id)
     if account is None:
@@ -269,6 +528,117 @@ def activate_account(
     db.commit()
     db.refresh(account)
     return ActivateAccountResponse(success=True, message="Account activated successfully.")
+
+
+@router.delete("/delete", response_model=DeleteAccountResponse)
+def delete_account(
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """
+    Permanently delete the current user's account and all associated data.
+
+    Several FK columns referencing `account` and `admin` use NO ACTION (the DB
+    refuses to delete a parent that still has children). The columns are also
+    NOT NULL, so we can't simply detach them. So before issuing the deletes,
+    walk the dependency chain from the leaves up and remove each level.
+    """
+    account = db.get(Account, acc.id)
+    if account is None:
+        raise HTTPException(404, detail="Account not found")
+
+    account_id = account.id
+    admin_id = account.admin_id
+
+    # ── workout_plan_activity branch ───────────────────────────────────
+    # completed_workout.workout_plan_activity_id → workout_plan_activity (NO ACTION)
+    wpa_ids_subq = select(WorkoutPlanActivity.id).where(
+        WorkoutPlanActivity.modified_by_account_id == account_id
+    )
+    db.exec(
+        delete(CompletedWorkout).where(
+            CompletedWorkout.workout_plan_activity_id.in_(wpa_ids_subq)
+        )
+    )
+    db.exec(
+        delete(WorkoutPlanActivity).where(
+            WorkoutPlanActivity.modified_by_account_id == account_id
+        )
+    )
+
+    # ── meal / prescribed_meal branch ──────────────────────────────────
+    # completed_meal_activity references both client_prescribed_meal_id and on_demand_meal_id (both NO ACTION)
+    # client_prescribed_meal.meal_id → meal (NO ACTION)
+    # meal_ingredient.meal_id → meal (NO ACTION)
+    meal_ids_subq = select(Meal.id).where(Meal.created_by_account_id == account_id)
+    cpm_ids_subq = select(ClientPrescribedMeal.id).where(
+        or_(
+            ClientPrescribedMeal.prescribed_by_account_id == account_id,
+            ClientPrescribedMeal.meal_id.in_(meal_ids_subq),
+        )
+    )
+    db.exec(
+        delete(CompletedMealActivity).where(
+            or_(
+                CompletedMealActivity.on_demand_meal_id.in_(meal_ids_subq),
+                CompletedMealActivity.client_prescribed_meal_id.in_(cpm_ids_subq),
+            )
+        )
+    )
+    db.exec(
+        delete(ClientPrescribedMeal).where(
+            or_(
+                ClientPrescribedMeal.prescribed_by_account_id == account_id,
+                ClientPrescribedMeal.meal_id.in_(meal_ids_subq),
+            )
+        )
+    )
+    db.exec(delete(MealIngredient).where(MealIngredient.meal_id.in_(meal_ids_subq)))
+    db.exec(delete(Meal).where(Meal.created_by_account_id == account_id))
+
+    # ── chat_message ──────────────────────────────────────────────────
+    db.exec(delete(ChatMessage).where(ChatMessage.from_account_id == account_id))
+
+    # ── role_promotion_resolution (only the rows this user is the subject of) ──
+    # We do NOT match on admin_id here: admin rows can be shared across multiple
+    # accounts (data shows account 21 and 33 both reference admin_id=3), so an
+    # admin_id match could nuke resolutions belonging to a different user.
+    # coach_request.role_promotion_resolution_id → role_promotion_resolution (NO ACTION)
+    rprs_filter = RolePromotionResolution.account_id == account_id
+    rprs_ids_subq = select(RolePromotionResolution.id).where(rprs_filter)
+    db.exec(
+        delete(CoachRequest).where(
+            CoachRequest.role_promotion_resolution_id.in_(rprs_ids_subq)
+        )
+    )
+    db.exec(delete(RolePromotionResolution).where(rprs_filter))
+
+    db.flush()  # apply pending deletes before parent rows go
+
+    # ── client/coach relationship + role-promotion cleanup ──
+    delete_client_coach_mappings(db, account)
+    delete_role_promotion_records(db, account)
+
+    # ── parent role rows (client/coach already cascade their own children) ──
+    if account.client_id is not None:
+        client = db.get(Client, account.client_id)
+        if client:
+            db.delete(client)
+
+    if account.coach_id is not None:
+        coach = db.get(Coach, account.coach_id)
+        if coach:
+            db.delete(coach)
+
+    # NOTE: We deliberately do NOT delete the admin row, even if account.admin_id
+    # is set. Multiple accounts can share an admin_id, so deleting the admin row
+    # would orphan the others. The user's account row is about to vanish, taking
+    # its admin_id reference with it — leaving the admin row intact is safe and
+    # preserves access for any other accounts that share it.
+
+    db.delete(account)
+    db.commit()
+    return DeleteAccountResponse(success=True, message="Account deleted successfully.")
 
 
 @router.patch("/update", response_model=AccountResponse)
@@ -285,6 +655,8 @@ def update_account(
     if account is None:
         raise HTTPException(404, detail="Account not found")
 
+    if payload.name is not None:
+        account.name = payload.name
     if payload.age is not None:
         account.age = payload.age
     if payload.email is not None:

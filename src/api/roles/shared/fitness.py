@@ -5,7 +5,7 @@ from typing import Optional
 
 from src.database.session import get_session
 from src.database.account.models import Account
-from src.api.dependencies import get_account_from_bearer, PaginationParams
+from src.api.dependencies import get_active_account, PaginationParams
 from src.database.workouts_and_activities.models import WorkoutPlan, WorkoutPlanActivity, WorkoutActivity
 from src.api.roles.shared.domain import CreateWorkoutPlanInput, CreateWorkoutPlanResponse
 from src.database.workouts_and_activities.models import Workout, WorkoutType, WorkoutEquiptment, Equiptment
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/roles/shared/fitness", tags=["shared", "fitness"])
 def create_workout_plan(
     payload: CreateWorkoutPlanInput,
     db: Session = Depends(get_session),
-    acc: Account = Depends(get_account_from_bearer)
+    acc: Account = Depends(get_active_account)
 ):
     # Create the workout plan
     plan = WorkoutPlan(strata_name=payload.strata_name)
@@ -51,7 +51,7 @@ def query_workout_activity(
     workout_id: int,
     pagination: PaginationParams = Depends(PaginationParams),
     db: Session = Depends(get_session),
-    acc: Account = Depends(get_account_from_bearer)
+    acc: Account = Depends(get_active_account)
 ):
     query = select(WorkoutActivity).where(WorkoutActivity.workout_id == workout_id)
     activities = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
@@ -64,7 +64,7 @@ def query_workout(
     equiptment_id: Optional[int] = None,
     pagination: PaginationParams = Depends(PaginationParams),
     db: Session = Depends(get_session),
-    acc: Account = Depends(get_account_from_bearer)
+    acc: Account = Depends(get_active_account)
 ):
     query = select(Workout)
     if equiptment_id is not None:
@@ -85,7 +85,7 @@ def query_workout(
 def query_supported_equiptment(
     pagination: PaginationParams = Depends(PaginationParams),
     db: Session = Depends(get_session),
-    acc: Account = Depends(get_account_from_bearer)
+    acc: Account = Depends(get_active_account)
 ):
     query = select(Equiptment)
     return db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()

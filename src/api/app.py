@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from src import config
-from src.api.dependencies import get_account_from_bearer
+from src.api.dependencies import get_active_account
 from src.database.session import get_session
 from src.database.account.models import Account, Notification
 
@@ -52,7 +52,7 @@ app.include_router(coach_fitness_router)
 app.include_router(admin_router)
 
 @app.get("/me")  # get_current_account assumes they pass a valid jwt as bearer
-def read_current_account(user = Depends(get_account_from_bearer)):
+def read_current_account(user = Depends(get_active_account)):
     return serialize_account(user)
 
 @app.get("/")

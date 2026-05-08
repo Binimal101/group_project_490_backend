@@ -1,15 +1,11 @@
-import os
-
-import requests
-from datetime import date
-
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, Query
 from typing import Optional, List
-from sqlmodel import select
+from sqlmodel import Session, select
 from sqlalchemy import func, desc, asc, delete
 
-from src import config
-from src.api.dependencies import get_account_from_bearer, get_client_account, get_active_account, PaginationParams
+
+from src.api.dependencies import get_active_account, get_client_account, PaginationParams
+from src.api.storage import upload_public_file_to_supabase
 
 #models
 from src.api.roles.client.domain import (
@@ -30,7 +26,12 @@ from src.api.roles.client.domain import (
     ClientInvoiceResponse,
     ClientBillingCyclesListResponse,
     ClientBillingCycleResponse,
+    AssignWorkoutPlanInput,
+    AssignWorkoutPlanResponse,
+    PayInvoiceInput,
+    PayInvoiceResponse,
 )
+from src.api.roles.coach.domain import CoachAvailabilityResponse
 
 from src.api.roles.shared.domain import DeleteRequestResponse
 
@@ -38,7 +39,7 @@ from src.database.session import get_session
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
 from src.database.account.models import Account, Availability, Notification
-from src.database.client.models import Client, ClientAvailability, FitnessGoals
+from src.database.client.models import Client, ClientAvailability, FitnessGoals, ClientWorkoutPlan
 from src.database.telemetry.models import (
     HealthMetrics, 
     ClientTelemetry, 
@@ -50,6 +51,14 @@ from src.database.telemetry.models import (
     DailyMealSurvey,
     CompletedMealActivity,
     CompletedWorkout,
+    DailyProgressPicture,
+)
+from src.database.workouts_and_activities.models import WorkoutPlan
+from src.api.roles.client.fitness import (
+    TELEMETRY_PROGRESS_PICTURE,
+    TELEMETRY_WEIGHT,
+    create_telemetry_event,
+    _get_or_create_daily_telemetry_for_type,
 )
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan
@@ -58,7 +67,7 @@ from src.database.payment.models import PaymentInformation, Invoice, BillingCycl
 router = APIRouter(prefix="/roles/client", tags=["client"])
 
 @router.post("/initial_survey", response_model=CreateClientResponse)
-def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_session), acc: Account = Depends(get_account_from_bearer)):
+def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_session), acc: Account = Depends(get_active_account)):
     """
     Creates a client, modifies user account to show client_id=xxx
     Attaches pmt info and fitness goal from initial survey
@@ -92,8 +101,7 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
     if client.id is None:
         raise HTTPException(500, detail="Something went wrong when adding new client")
 
-    telem = ClientTelemetry(client_id=client.id, date=date.today())
-    db.add(telem)
+    telem = create_telemetry_event(db, client.id, TELEMETRY_WEIGHT, commit=False)
     
     client_details.fitness_goals.client_id = client.id  # type: ignore
     db.add(client_details.fitness_goals)
@@ -135,6 +143,7 @@ def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_s
             db.flush()
             client.client_availability_id = ca.id
             ca_id = ca.id
+            db.add(client)
         else:
             db.exec(delete(Availability).where(Availability.client_availability_id == ca_id))
 
@@ -154,11 +163,18 @@ def update_client_information(payload: UpdateClientInfoInput, db = Depends(get_s
         db.flush()
         client.payment_information_id = payload.payment_information.id
 
-    # Health metrics: append a new telemetry record and attach the metrics
+    # Health metrics: one editable body metric row per local day.
     if payload.health_metrics:
-        telem = ClientTelemetry(client_id=client.id, date=date.today())
-        db.add(telem)
-        db.flush()
+        telem = _get_or_create_daily_telemetry_for_type(db, client.id, TELEMETRY_WEIGHT)
+        existing_metrics = db.exec(
+            select(HealthMetrics).where(HealthMetrics.client_telemetry_id == telem.id)
+        ).first()
+        if existing_metrics is not None:
+            existing_metrics.weight = payload.health_metrics.weight
+            db.add(existing_metrics)
+            db.commit()
+            return DunderResponse()
+
         payload.health_metrics.client_telemetry_id = telem.id
         db.add(payload.health_metrics)
 
@@ -188,6 +204,64 @@ def me(db = Depends(get_session), acc: Account = Depends(get_client_account)):
         last_recorded_weight=weight,
         last_recorded_height=height,
     )
+
+
+@router.get("/coach_availability/{coach_id}", response_model=CoachAvailabilityResponse)
+def get_coach_availability_for_client(coach_id: int, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Proxy endpoint for clients to fetch a coach's availability using the client router prefix.
+    Mirrors the logic in the coach router so client-side calls to `/roles/client/coach_availability/{coach_id}` work.
+    """
+    if acc.client_id is None:
+        raise HTTPException(404, detail="Please log in to view coach availability")
+
+    coach = db.get(Coach, coach_id)
+    if coach is None:
+        raise HTTPException(404, detail="Coach not found")
+
+    coach_account = db.exec(
+        select(Account).where(
+            Account.coach_id == coach_id,
+            Account.is_active == True,
+        )
+    ).first()
+
+    if coach_account is None or coach.verified == False:
+        raise HTTPException(404, detail="Coach is not verified yet, availability is not viewable")
+
+    if coach.coach_availability is None:
+        return CoachAvailabilityResponse(coach_availabilities=[])
+
+    availabilities = db.exec(select(Availability).where(Availability.coach_availability_id == coach.coach_availability)).all()
+
+    return CoachAvailabilityResponse(coach_availabilities=availabilities)
+
+@router.post("/assign_plan", response_model=AssignWorkoutPlanResponse)
+def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Assigns a workout plan to the authenticated client.
+    """
+    if acc.client_id is None:
+        raise HTTPException(404, detail="Client profile not found")
+
+    plan = db.get(WorkoutPlan, payload.workout_plan_id)
+    if plan is None:
+        raise HTTPException(404, detail="Workout plan not found")
+
+    client_workout_plan = ClientWorkoutPlan(
+        client_id=acc.client_id,
+        workout_plan_id=payload.workout_plan_id,
+        start_time=payload.start_dt,
+        end_time=payload.end_dt
+    )
+    db.add(client_workout_plan)
+    db.commit()
+    db.refresh(client_workout_plan)
+
+    if client_workout_plan.id is None:
+        raise HTTPException(500, detail="Something went wrong while assigning the workout plan")
+
+    return AssignWorkoutPlanResponse(client_workout_plan_id=client_workout_plan.id)
 
 
 
@@ -334,37 +408,78 @@ def get_current_billing_cycles(db = Depends(get_session), acc: Account = Depends
     return ClientBillingCyclesListResponse(cycles=cycles_list)
 
 @router.post("/upload_progress_picture")
-def upload_progress_picture(file: UploadFile, acc: Account = Depends(get_client_account)):
-    """Upload an image to the `progress_picture` bucket and return the public URL.
+def upload_progress_picture(
+    file: UploadFile,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    """Upload a progress picture and persist one record per day (upsert).
 
-    This endpoint intentionally does not modify the database yet.
+    Uploads the file to Supabase, then finds or creates today's
+    ClientTelemetry row and upserts a DailyProgressPicture record so that
+    only one progress picture exists per client per day.  Re-uploading on the
+    same day replaces the previous URL.
     """
+    public_url = upload_public_file_to_supabase(file, "progress_picture", str(acc.id))
 
-    SUPABASE_URL = config.SUPABASE_URL or os.getenv("SUPABASE_URL")
-    SUPABASE_SERVICE_KEY = config.SUPABASE_SERVICE_KEY or os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
+    if acc.client_id is None:
+        raise HTTPException(status_code=404, detail="Client profile not found")
 
-    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        raise HTTPException(500, detail="Supabase storage is not configured on the server")
+    telemetry = _get_or_create_daily_telemetry_for_type(
+        db,
+        acc.client_id,
+        TELEMETRY_PROGRESS_PICTURE,
+    )
 
-    bucket = "progress_picture"
-    filename = f"{acc.id}_{file.filename}"
-    upload_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{bucket}/{filename}"
+    pic = db.exec(
+        select(DailyProgressPicture).where(
+            DailyProgressPicture.client_telemetry_id == telemetry.id
+        )
+    ).first()
 
-    headers = {
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "apikey": SUPABASE_SERVICE_KEY,
+    if pic is None:
+        pic = DailyProgressPicture(client_telemetry_id=telemetry.id, url=public_url)
+        db.add(pic)
+    else:
+        pic.url = public_url
+
+    db.commit()
+    db.refresh(pic)
+
+    return {
+        "id": pic.id,
+        "client_telemetry_id": telemetry.id,
+        "url": pic.url,
+        "date": str(telemetry.date),
     }
 
-    try:
-        resp = requests.put(upload_url, data=file.file, headers=headers)
-    except Exception as e:
-        raise HTTPException(500, detail=f"Upload failed: {e}")
 
-    if resp.status_code not in (200, 201, 204):
-        raise HTTPException(resp.status_code, detail=f"Upload failed: {resp.text}")
+@router.get("/progress_pictures")
+def get_progress_pictures(
+    pagination: PaginationParams = Depends(PaginationParams),
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    """Return all progress pictures for the current client, newest first."""
+    rows = db.exec(
+        select(DailyProgressPicture, ClientTelemetry)
+        .join(ClientTelemetry, DailyProgressPicture.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == acc.client_id)
+        .order_by(DailyProgressPicture.id.desc())
+        .offset(pagination.skip)
+        .limit(pagination.limit)
+    ).all()
 
-    public_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{bucket}/{filename}"
-    return {"url": public_url}
+    pictures = []
+    for pic, telem in rows:
+        pictures.append({
+            "id": pic.id,
+            "client_telemetry_id": telem.id,
+            "url": pic.url,
+            "date": str(telem.date),
+        })
+
+    return pictures
 
 
 @router.get("/query/hirable_coaches", response_model=List[HirableCoachItem])
@@ -553,186 +668,130 @@ def get_review(coach_id: int, db = Depends(get_session), acc: Account = Depends(
 
     return ReviewsResponse(reviews=reviews)
 
-@router.get("/my_coach", response_model=MyCoachResponse)
+@router.get("/my_coach")
 def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
-    Returns the coach of a specific client
+    Returns the coach of a specific client with account information
     """
 
     if acc is None:
         raise HTTPException(404, detail="Account not found")
-    
-    coach_request = db.query(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).first()
 
-    # If no request found or the request hasn't been accepted, surface as not found.
-    if coach_request is None or not getattr(coach_request, "is_accepted", False):
-        raise HTTPException(404, detail="No active coach relationship found")
-    
-    relationship = db.query(ClientCoachRelationship).filter(ClientCoachRelationship.request_id == coach_request.id).first()
+    coach_row = db.exec(
+        select(ClientCoachRequest, ClientCoachRelationship)
+        .join(
+            ClientCoachRelationship,
+            ClientCoachRelationship.request_id == ClientCoachRequest.id,
+        )
+        .where(
+            ClientCoachRequest.client_id == acc.client_id,
+            ClientCoachRequest.is_accepted.is_(True),
+            ClientCoachRelationship.is_active.is_(True),
+            ClientCoachRelationship.client_blocked.is_(False),
+            ClientCoachRelationship.coach_blocked.is_(False),
+        )
+        .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
+    ).first()
 
-    if relationship is None:
-        raise HTTPException(404, detail="Relationship not Found")
-    
-    coach = db.query(Coach).filter(Coach.id == coach_request.coach_id).first()
+    if coach_row is None:
+        raise HTTPException(404, detail="You do not have an accepted coach request")
 
-    return MyCoachResponse(coach = coach)
+    coach_request, relationship = coach_row
 
-@router.get("/my_coach_requests", response_model=MyCoachRequestsResponse)
-def get_my_coach_requests(db = Depends(get_session), acc: Account = Depends(get_client_account)):
-    """
-    Returns all coach requests for a specific client
-    """
-
-    if acc is None:
-        raise HTTPException(404, detail="Account not found")
-    
-    requests = db.get(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).all()
-
-    return MyCoachRequestsResponse(requests = requests)
-
-@router.get("/coach_profile/{coach_id}")
-def get_coach_profile(coach_id: int, db = Depends(get_session), acc: Account = Depends(get_client_account)):
-    """
-    Allows a client to view a coach's profile given their ID.
-    Returns account basics, specialties, certifications, experiences,
-    pricing/payment plan, availability, and rating summary.
-    """
-
-    coach = db.get(Coach, coach_id)
+    coach = db.exec(select(Coach).where(Coach.id == coach_request.coach_id)).first()
 
     if coach is None:
         raise HTTPException(404, detail="Coach not found")
 
+    coach_account = db.exec(select(Account).where(Account.coach_id == coach.id)).first()
+
+    return {
+        "coach_id": coach.id,
+        "id": coach.id,
+        "verified": coach.verified,
+        "specialties": coach.specialties,
+        "coach_availability": coach.coach_availability,
+        "name": coach_account.name if coach_account else f"Coach #{coach.id}",
+        "email": coach_account.email if coach_account else None,
+        "account_id": coach_account.id if coach_account else None,
+        "specialty": coach.specialties or "Active coach",
+        "relationship_id": relationship.id,
+    }
+
+@router.get("/my_coach_requests", response_model=MyCoachRequestsResponse)
+def get_my_coach_requests(db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Returns all coach requests for a specific client, enriched with coach names
+    """
+
+    if acc is None:
+        raise HTTPException(404, detail="Account not found")
+
+    requests = db.query(ClientCoachRequest).filter(ClientCoachRequest.client_id == acc.client_id).all()
+
+    result = []
+    for req in requests:
+        coach_account = db.exec(select(Account).where(Account.coach_id == req.coach_id)).first()
+        coach_name = coach_account.name if coach_account else f"Coach #{req.coach_id}"
+        result.append({
+            "id": req.id,
+            "coach_id": req.coach_id,
+            "coach_name": coach_name,
+            "is_accepted": req.is_accepted,
+            "created_at": req.created_at,
+        })
+
+    return MyCoachRequestsResponse(requests=result)
+
+@router.post("/pay_invoice/{invoice_id}", response_model=PayInvoiceResponse)
+def pay_invoice(invoice_id: int, payload: PayInvoiceInput, db = Depends(get_session), acc: Account = Depends(get_client_account)):
+    """
+    Make a payment towards an invoice.
+    Verifies the invoice belongs to the authenticated client,
+    that the payment amount is valid (> 0 and <= outstanding balance),
+    updates the outstanding balance, and notifies the coach.
+    """
+    invoice = db.get(Invoice, invoice_id)
+
+    if invoice is None:
+        raise HTTPException(404, detail="Invoice not found")
+
+    if invoice.client_id != acc.client_id:
+        raise HTTPException(403, detail="This invoice does not belong to you")
+
+    if payload.amount > invoice.outstanding_balance:
+        raise HTTPException(400, detail=f"Payment amount exceeds outstanding balance of ${invoice.outstanding_balance:.2f}")
+
+    billing_cycle = db.get(BillingCycle, invoice.billing_cycle_id)
+    if billing_cycle is None:
+        raise HTTPException(404, detail="Billing cycle not found")
+
+    pricing_plan = db.get(PricingPlan, billing_cycle.pricing_plan_id)
+    if pricing_plan is None:
+        raise HTTPException(404, detail="Pricing plan not found")
+
     coach_account = db.exec(
-        select(Account).where(Account.coach_id == coach_id)
+        select(Account).where(Account.coach_id == pricing_plan.coach_id)
     ).first()
 
     if coach_account is None:
         raise HTTPException(404, detail="Coach account not found")
 
-    if not coach_account.is_active or not coach.verified:
-        raise HTTPException(404, detail="Coach not available")
+    invoice.outstanding_balance -= payload.amount
+    db.add(invoice)
+    db.commit()
 
-    certifications = db.exec(
-        select(Certifications)
-        .join(CoachCertifications, CoachCertifications.certification_id == Certifications.id)
-        .where(CoachCertifications.coach_id == coach_id)
-    ).all()
+    notification = Notification(
+        account_id=coach_account.id,
+        fav_category="payment_received",
+        message=f"Payment received from {acc.name}",
+        details=f"{acc.name} paid ${payload.amount:.2f} towards invoice {invoice_id}.",
+    )
+    db.add(notification)
+    db.commit()
 
-    experiences = db.exec(
-        select(Experience)
-        .join(CoachExperience, CoachExperience.experience_id == Experience.id)
-        .where(CoachExperience.coach_id == coach_id)
-    ).all()
-
-    availability = db.exec(
-        select(Availability).where(
-            Availability.coach_availability_id == coach.coach_availability
-        )
-    ).all()
-
-    pricing_plan = db.exec(
-        select(PricingPlan).where(PricingPlan.coach_id == coach_id)
-    ).first()
-
-    rating_summary = db.exec(
-        select(
-            func.count(CoachReviews.id).label("rating_count"),
-            func.avg(CoachReviews.rating).label("avg_rating"),
-        ).where(CoachReviews.coach_id == coach_id)
-    ).first()
-
-    return {
-        "base_account": {
-            "id": coach_account.id,
-            "name": coach_account.name,
-            "email": coach_account.email,
-            "is_active": coach_account.is_active,
-            "gender": coach_account.gender,
-            "bio": coach_account.bio,
-            "age": coach_account.age,
-            "pfp_url": coach_account.pfp_url,
-            "client_id": coach_account.client_id,
-            "coach_id": coach_account.coach_id,
-            "admin_id": coach_account.admin_id,
-            "created_at": coach_account.created_at,
-        },
-        "coach_account": coach,
-        "specialties": coach.specialties,
-        "certifications": certifications,
-        "experiences": experiences,
-        "pricing_plan": pricing_plan,
-        "availability": availability,
-        "rating_summary": {
-            "rating_count": int(rating_summary.rating_count or 0),
-            "avg_rating": float(rating_summary.avg_rating) if rating_summary.avg_rating is not None else None,
-        },
-    }
-
-
-@router.get("/progress_pictures")
-def get_progress_pictures(db = Depends(get_session), acc: Account = Depends(get_client_account)):
-    """
-    Queries progress picture URLs for the logged-in client.
-    Progress pictures are stored in HealthMetrics.progress_pic_url.
-    """
-
-    if acc.client_id is None:
-        raise HTTPException(403, detail="Client profile required")
-
-    pictures = db.exec(
-        select(
-            ClientTelemetry.date,
-            HealthMetrics.progress_pic_url,
-        )
-        .join(HealthMetrics, HealthMetrics.client_telemetry_id == ClientTelemetry.id)
-        .where(
-            ClientTelemetry.client_id == acc.client_id,
-            HealthMetrics.progress_pic_url.is_not(None),
-        )
-        .order_by(ClientTelemetry.date.desc())
-    ).all()
-
-    return [
-        {
-            "date": pic.date,
-            "progress_pic_url": pic.progress_pic_url,
-        }
-        for pic in pictures
-    ]
-
-
-@router.get("/my_coach")
-def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_account)):
-    """
-    Returns the active coach relationship for the logged-in client.
-    """
-
-    if acc.client_id is None:
-        raise HTTPException(403, detail="Client profile required")
-
-    result = db.exec(
-        select(ClientCoachRequest, ClientCoachRelationship)
-        .join(ClientCoachRelationship, ClientCoachRelationship.request_id == ClientCoachRequest.id)
-        .where(
-            ClientCoachRequest.client_id == acc.client_id,
-            ClientCoachRequest.is_accepted == True,
-            ClientCoachRelationship.is_active == True,
-            ClientCoachRelationship.client_blocked == False,
-            ClientCoachRelationship.coach_blocked == False,
-        )
-    ).first()
-
-    if result is None:
-        raise HTTPException(404, detail="No active coach relationship found")
-
-    request, relationship = result
-
-    return {
-        "relationship_id": relationship.id,
-        "request_id": request.id,
-        "client_id": request.client_id,
-        "coach_id": request.coach_id,
-        "created_at": relationship.created_at,
-        "is_active": relationship.is_active,
-    }
+    return PayInvoiceResponse(
+        invoice_id=invoice_id,
+        amount_paid=payload.amount,
+        remaining_balance=invoice.outstanding_balance,
+    )
