@@ -9,10 +9,40 @@ from src.database.workouts_and_activities.models import (
 )
 from src.api.roles.coach.domain import (
     CreateWorkoutInput, CreateWorkoutResponse,
-    CreateActivityInput, CreateActivityResponse
+    CreateActivityInput, CreateActivityResponse,
 )
+from pydantic import BaseModel
+from typing import Optional
 
 router = APIRouter(prefix="/roles/coach/fitness", tags=["coach", "fitness"])
+
+
+class CreateEquiptmentInput(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class CreateEquiptmentResponse(BaseModel):
+    equiptment_id: int
+
+
+@router.post("/equiptment", response_model=CreateEquiptmentResponse)
+def create_equiptment(
+    payload: CreateEquiptmentInput,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    existing = db.exec(select(Equiptment).where(Equiptment.name == payload.name)).first()
+    if existing:
+        return CreateEquiptmentResponse(equiptment_id=existing.id)  # type: ignore
+
+    eq = Equiptment(name=payload.name, description=payload.description)
+    db.add(eq)
+    db.commit()
+    db.refresh(eq)
+    if eq.id is None:
+        raise HTTPException(500, detail="Failed to create equipment")
+    return CreateEquiptmentResponse(equiptment_id=eq.id)
 
 @router.post("/workout", response_model=CreateWorkoutResponse)
 def create_workout(
@@ -44,6 +74,19 @@ def create_workout(
     db.add(workout)
     db.flush()
 
+    activity_ids: list[int] = []
+    for tier in payload.activity_tiers:
+        activity = WorkoutActivity(
+            workout_id=workout.id,  # type: ignore
+            intensity_measure=payload.intensity_measure,
+            intensity_value=tier.intensity_value,
+            estimated_calories_per_unit_frequency=tier.estimated_calories_per_unit_frequency,  # type: ignore
+        )
+        db.add(activity)
+        db.flush()
+        if activity.id is not None:
+            activity_ids.append(activity.id)
+
     for eq_input in payload.equipment:
         if eq_input.equiptment_id is not None:
             eq = db.get(Equiptment, eq_input.equiptment_id)
@@ -67,7 +110,7 @@ def create_workout(
         db.add(workout_eq)
     
     db.commit()
-    return CreateWorkoutResponse(workout_id=workout.id)
+    return CreateWorkoutResponse(workout_id=workout.id, workout_activity_ids=activity_ids)  # type: ignore
 
 @router.post("/activity", response_model=CreateActivityResponse)
 def create_activity(

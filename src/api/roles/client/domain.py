@@ -87,25 +87,39 @@ class InitialSurveyInput(BaseModel): #creates a client
 class UpdateClientInfoInput(BaseModel):
     fitness_goals: Optional[FitnessGoals] = Field(default=None) #reset fitness goals
     payment_information: Optional[PaymentInformation] = Field(default=None) #reset pmt info
-    availabilities: Optional[List[Availability]] = Field(default=None) #new availabilities
     health_metrics: Optional[HealthMetrics] = Field(default=None)
 
     @model_validator(mode="after") #runs after model is validated from typing standards
     def ensure_not_empty(self):
         if not any((
-            self.fitness_goals, 
-            self.payment_information, 
-            self.availabilities,
+            self.fitness_goals,
+            self.payment_information,
             self.health_metrics
         )):
             raise HTTPException(422, detail="Cannot update with no update parameters")
-        
+
         return self #return the "safe" validated model, which is just itself (no need to cast / do anything else)
+
+class ScheduleBlock(BaseModel):
+    start_dt: datetime
+    end_dt: datetime
+
+    @model_validator(mode="after")
+    def _ordered(self):
+        if self.start_dt >= self.end_dt:
+            raise HTTPException(400, detail="start_dt must be strictly before end_dt")
+        return self
+
 
 class AssignWorkoutPlanInput(BaseModel):
     workout_plan_id: int
-    start_dt: datetime
-    end_dt: datetime
+    blocks: List[ScheduleBlock]
+
+    @model_validator(mode="after")
+    def _has_blocks(self):
+        if not self.blocks:
+            raise HTTPException(400, detail="At least one schedule block is required")
+        return self
 
 #Responses
 class MyCoachResponse(BaseModel):
@@ -137,7 +151,7 @@ class ClientCoachRequestResponse(BaseModel):
     request_id: int
 
 class AssignWorkoutPlanResponse(BaseModel):
-    client_workout_plan_id: int
+    client_workout_plan_ids: List[int]
 
 class CreateClientResponse(BaseModel):
     client_id: int
@@ -183,3 +197,21 @@ class PayInvoiceResponse(BaseModel):
     invoice_id: int
     amount_paid: float
     remaining_balance: float
+
+class AvailabilityResponse(BaseModel):
+    id: Optional[int]
+    account_id: int
+    start_dt: datetime
+    end_dt: datetime
+    repeats_weekly: bool
+    recurrence_end_dt: Optional[datetime]
+    max_time_commitment_seconds: Optional[float]
+
+class BusySlotResponse(BaseModel):
+    id: Optional[int]
+    account_id: Optional[int]
+    start_dt: Optional[datetime]
+    end_dt: Optional[datetime]
+    source: str
+    source_id: Optional[int]
+    note: Optional[str]

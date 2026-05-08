@@ -1,11 +1,10 @@
 from fastapi import HTTPException
-from sqlalchemy import Column, Time
+from sqlalchemy import Column, DateTime
 from sqlmodel import Field
 from decimal import Decimal
 from typing import Optional
-from datetime import date, datetime, time
-from enum import Enum
-from pydantic import field_validator, model_validator, EmailStr
+from datetime import date, datetime
+from pydantic import model_validator, EmailStr
 
 from src.database.base import SQLModelLU
 
@@ -45,32 +44,43 @@ class Account(SQLModelLU, table=True):
           raise HTTPException(status_code=400, detail="Only one of hashed_password or gcp_user_id can be provided")
       return self
 
-class Weekday(str, Enum):
-   MONDAY = "monday"
-   TUESDAY = "tuesday"
-   WEDNESDAY = "wednesday"
-   THURSDAY = "thursday"
-   FRIDAY = "friday"
-   SATURDAY = "saturday"
-   SUNDAY = "sunday"
-
 class Availability(SQLModelLU, table=True):
     __tablename__ = "availability"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    weekday: Weekday
-    start_time: time = Field(sa_column=Column(Time(timezone=True), nullable=False))
-    end_time: time = Field(sa_column=Column(Time(timezone=True), nullable=False))
+    account_id: int = Field(foreign_key="account.id", index=True)
+    start_dt: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    end_dt: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    repeats_weekly: bool = Field(default=False)
+    recurrence_end_dt: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     max_time_commitment_seconds: Optional[Decimal] = Field(default=None, max_digits=8, decimal_places=2)
-    client_availability_id: Optional[int] = Field(default=None, foreign_key="client_availability.id")
-    coach_availability_id: Optional[int] = Field(default=None, foreign_key="coach_availability.id")
 
     @model_validator(mode="after")
     def validate_time(self):
-        start_time = self.start_time
-        end_time = self.end_time
-        if start_time >= end_time:
-            raise HTTPException(status_code=400, detail="start_time must be before end_time")
+        if self.start_dt >= self.end_dt:
+            raise HTTPException(status_code=400, detail="start_dt must be before end_dt")
+        if self.recurrence_end_dt is not None and self.recurrence_end_dt < self.end_dt:
+            raise HTTPException(status_code=400, detail="recurrence_end_dt must be on or after end_dt")
+        return self
+
+
+class BusySlot(SQLModelLU, table=True):
+    __tablename__ = "busy_slot"  # type: ignore
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True)
+    start_dt: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+    end_dt: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+    source: str = Field(default="manual")
+    source_id: Optional[int] = Field(default=None, index=True)
+    note: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_time(self):
+        if self.start_dt is None or self.end_dt is None:
+            return self
+        if self.start_dt >= self.end_dt:
+            raise HTTPException(status_code=400, detail="start_dt must be before end_dt")
         return self
 
 class Notification(SQLModelLU, table=True):

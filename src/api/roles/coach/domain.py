@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 #Coach
 from src.database.coach.models import Experience, Certifications, Coach
-from src.database.account.models import Availability, Account, Weekday
+from src.database.account.models import Availability, Account
 from src.database.payment.models import PricingInterval
 from src.database.workouts_and_activities.models import Equiptment, WorkoutPlanActivity, WorkoutType
 from src.database.client.models import Client, FitnessGoals
@@ -79,7 +79,6 @@ class PricingPlanInput(BaseModel):
         return v
 
 class UpdateCoachInfoInput(BaseModel):
-    availabilities: Optional[List[Availability]] = Field(default=None)
     experiences: Optional[List[Experience]] = Field(default=None)
     certifications: Optional[List[Certifications]] = Field(default=None)
     specialties: Optional[List[str]] = Field(default=None)
@@ -87,18 +86,6 @@ class UpdateCoachInfoInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_nested(self):
-        if self.availabilities is not None:
-            validated_avails = []
-            for a in self.availabilities:
-                if isinstance(a, dict):
-                    validated_avails.append(Availability.model_validate(a))
-                else:
-                    try:
-                        validated_avails.append(Availability.model_validate(a.model_dump()))
-                    except Exception:
-                        validated_avails.append(Availability.model_validate(a))
-            self.availabilities = validated_avails
-
         if self.experiences is not None:
             validated_exps = []
             for e in self.experiences:
@@ -147,14 +134,31 @@ class WorkoutPlanInput(BaseModel):
     strata_name: str
     workout_activities: Optional[List[WorkoutPlanActivity]] = Field(default=None)
 
-class PrescribeWorkoutPlanInput(BaseModel):
-    workout_plan_id: int
-    client_id: int
+class CoachScheduleBlock(BaseModel):
     start_dt: datetime
     end_dt: datetime
 
+    @model_validator(mode="after")
+    def _ordered(self):
+        if self.start_dt >= self.end_dt:
+            raise HTTPException(400, detail="start_dt must be strictly before end_dt")
+        return self
+
+
+class PrescribeWorkoutPlanInput(BaseModel):
+    workout_plan_id: int
+    client_id: int
+    blocks: List[CoachScheduleBlock]
+
+    @model_validator(mode="after")
+    def _has_blocks(self):
+        if not self.blocks:
+            raise HTTPException(400, detail="At least one schedule block is required")
+        return self
+
+
 class PrescribeWorkoutPlanResponse(BaseModel):
-    client_workout_plan_id: int
+    client_workout_plan_ids: List[int]
 
 #Responses
 class DunderResponse(BaseModel):
@@ -189,15 +193,35 @@ class WorkoutEquipmentInput(BaseModel):
     is_required: bool = True
     is_recommended: bool = True
 
+class WorkoutActivityTier(BaseModel):
+    intensity_value: int
+    estimated_calories_per_unit_frequency: Decimal = Field(max_digits=10, decimal_places=6)
+
+
 class CreateWorkoutInput(BaseModel):
     name: str
     description: str
     instructions: str
     workout_type: str
     equipment: List[WorkoutEquipmentInput] = []
+    intensity_measure: str
+    activity_tiers: List[WorkoutActivityTier]
+
+    @model_validator(mode="after")
+    def validate_three_distinct_tiers(self):
+        if len(self.activity_tiers) != 3:
+            raise ValueError("Exactly 3 activity tiers are required (3 intensity values for the chosen measure).")
+        values = [t.intensity_value for t in self.activity_tiers]
+        if len(set(values)) != 3:
+            raise ValueError("The 3 activity tiers must have distinct intensity_value entries.")
+        if not self.intensity_measure or not self.intensity_measure.strip():
+            raise ValueError("intensity_measure is required.")
+        return self
+
 
 class CreateWorkoutResponse(BaseModel):
     workout_id: int
+    workout_activity_ids: List[int]
 
 class CreateActivityInput(BaseModel):
     workout_id: int

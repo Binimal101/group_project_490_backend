@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta, timezone
 
 os.environ["IS_TESTING"] = "true"
 
@@ -170,7 +171,12 @@ def seed_equipment(db_session):
 def seed_workout(test_client, coach_auth_header):
     workout_payload = build_create_workout_payload()
     workout_resp = test_client.post("/roles/coach/fitness/workout", json=workout_payload, headers=coach_auth_header)
-    return workout_resp.json()["workout_id"]
+    if workout_resp.status_code != 200:
+        raise ValueError(f"Failed to create workout: {workout_resp.status_code} - {workout_resp.text}")
+    resp_json = workout_resp.json()
+    if "workout_id" not in resp_json:
+        raise ValueError(f"Response missing 'workout_id': {resp_json}")
+    return resp_json["workout_id"]
 
 @pytest.fixture(scope="function")
 def seed_workout_activity(test_client, coach_auth_header, seed_workout):
@@ -189,3 +195,24 @@ def seed_multiple_workouts(test_client, coach_auth_header):
         resp = test_client.post("/roles/coach/fitness/workout", json=w, headers=coach_auth_header)
         workout_ids.append(resp.json()["workout_id"])
     return workout_ids
+
+
+@pytest.fixture(scope="function")
+def seed_availability(test_client):
+    def _seed(auth_header, *, start_dt=None, end_dt=None, repeats_weekly=False, recurrence_end_dt=None, note=None):
+        start_dt = start_dt or datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) + timedelta(days=7)
+        end_dt = end_dt or (start_dt + timedelta(hours=2))
+        response = test_client.post(
+            "/roles/client/availability",
+            json={
+                "start_dt": start_dt.isoformat(),
+                "end_dt": end_dt.isoformat(),
+                "repeats_weekly": repeats_weekly,
+                "recurrence_end_dt": recurrence_end_dt.isoformat() if recurrence_end_dt else None,
+                "note": note,
+            },
+            headers=auth_header,
+        )
+        return response
+
+    return _seed
