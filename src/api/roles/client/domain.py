@@ -52,6 +52,10 @@ class WeightUpdateInput(BaseModel):
     weight: int
 
 class InitialSurveyInput(BaseModel): #creates a client
+    age: int
+    gender: str
+    bio: Optional[str] = None
+    pfp_url: Optional[str] = None
     fitness_goals: FitnessGoals
     payment_information: PaymentInformation
     availabilities: List[Availability]

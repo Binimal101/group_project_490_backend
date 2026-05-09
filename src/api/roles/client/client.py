@@ -121,6 +121,11 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
     if client.id is None:
         raise HTTPException(500, detail="Something went wrong when adding new client")
 
+    acc.age = client_details.age
+    acc.gender = client_details.gender
+    acc.bio = client_details.bio
+    acc.pfp_url = client_details.pfp_url
+
     for a in client_details.availabilities:
         a.account_id = acc.id
         db.add(a)
