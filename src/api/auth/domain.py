@@ -8,10 +8,6 @@ class SignupRequest(BaseModel):
     email: str
     password: str
     name: str
-    age: int
-    gender: str
-    pfp_url: Optional[str] = None
-    bio: Optional[str] = None
     gcp_user_id: Optional[str] = None
 
 

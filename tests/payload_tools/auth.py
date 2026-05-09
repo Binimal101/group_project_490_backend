@@ -1,14 +1,16 @@
 import datetime as dt
 
-def build_signup_payload(email_prefix="testuser", password="StrongPass123", name="Test User", age=30, gender="non-binary"):
-    """Builds a mock user signup payload."""
+def build_signup_payload(email_prefix="testuser", password="StrongPass123", name="Test User", age=30, gender="non-binary", pfp_url=None, bio=None):
+    """Builds a mock user signup payload.
+
+    Extra profile args are accepted for caller compatibility, but signup sends
+    only the minimal account fields.
+    """
     timestamp = dt.datetime.now().timestamp()
     return {
         "email": f"{email_prefix}_{timestamp}@example.com",
         "password": password,
         "name": name,
-        "age": age,
-        "gender": gender,
     }
 
 def build_login_payload(email, password="StrongPass123"):
