@@ -219,6 +219,7 @@ class AccountResponse(BaseModel):
     client_id: Optional[int] = None
     coach_id: Optional[int] = None
     admin_id: Optional[int] = None
+    is_suspended: bool = False
     created_at: Optional[datetime] = None
 
 class SendMessageResponse(BaseModel):

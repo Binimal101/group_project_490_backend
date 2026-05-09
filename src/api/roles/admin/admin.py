@@ -65,9 +65,48 @@ def serialize_admin_account(account: Account) -> AdminAccountItem:
         roles=admin_account_roles(account),
         status="active" if account.is_active else "deactivated",
         is_active=account.is_active,
+        is_suspended=account.is_suspended,
         created_at=account.created_at,
         last_active=None,
     )
+
+
+@router.post("/accounts/{account_id}/suspend", response_model=DeactivateAccountResponse)
+def suspend_account(
+    account_id: int,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_admin_account),
+):
+    target = db.get(Account, account_id)
+    if target is None:
+        raise HTTPException(404, detail="Account not found")
+    target.is_suspended = True
+    db.add(target)
+    db.commit()
+
+    affected_accounts = get_affected_accounts(db, target)
+    notify_affected_accounts(db, target, affected_accounts)
+    delete_client_coach_mappings(db, target)
+
+    db.refresh(target)
+    return DeactivateAccountResponse(success=True, message="Account suspended")
+
+
+@router.post("/accounts/{account_id}/unsuspend", response_model=ActivateAccountResponse)
+def unsuspend_account(
+    account_id: int,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_admin_account),
+):
+    target = db.get(Account, account_id)
+    if target is None:
+        raise HTTPException(404, detail="Account not found")
+    target.is_suspended = False
+    db.add(target)
+    db.commit()
+
+    db.refresh(target)
+    return ActivateAccountResponse(success=True, message="Account unsuspended")
 
 @router.get("/accounts", response_model=List[AdminAccountItem])
 def query_accounts(

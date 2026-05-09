@@ -17,7 +17,7 @@ from src.database.meal.models import Meal, ClientPrescribedMeal, MealIngredient
 from src.database.workouts_and_activities.models import WorkoutPlanActivity
 from src.database.role_management.models import RolePromotionResolution, CoachRequest
 from src.database.reports.models import CoachReviews
-from src.api.dependencies import get_active_account, get_account_even_if_inactive
+from src.api.dependencies import get_active_account, get_account_even_if_inactive, get_admin_account
 from src.api.storage import upload_public_file_to_supabase
 from src.api.roles.shared.domain import FullProfileResponse, AccountResponse, UpdateAccountInput
 from sqlmodel import Session, select, desc, func, delete, or_
@@ -27,7 +27,6 @@ from src.database.reports.models import CoachReviews
 from src.database.role_management.models import RolePromotionResolution, CoachRequest
 from src.api.dependencies import get_account_from_bearer, get_active_account, get_account_even_if_inactive
 from src.api.storage import upload_public_file_to_supabase
-from src.api.roles.shared.domain import FullProfileResponse, AccountResponse, UpdateAccountInput
 from sqlmodel import Session, select, desc, func
 from sqlalchemy import or_
 from pydantic import BaseModel, EmailStr
@@ -556,7 +555,6 @@ def delete_role_promotion_records(db: Session, account: Account):
 class DeleteAccountResponse(BaseModel):
     success: bool
     message: str
-
 
 @router.post("/deactivate", response_model=DeactivateAccountResponse)
 def deactivate_account(

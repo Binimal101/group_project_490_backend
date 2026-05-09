@@ -14,6 +14,7 @@ class AdminAccountItem(BaseModel):
     roles: List[str]
     status: str
     is_active: bool
+    is_suspended: bool
     created_at: Optional[datetime] = None
     last_active: Optional[str] = None
 

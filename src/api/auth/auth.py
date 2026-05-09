@@ -32,6 +32,9 @@ def read_current_roles(user: Account = Depends(get_account_even_if_inactive), db
 
     if not user.is_active:
         return ["deactivated"]
+    
+    if user.is_suspended:
+        return ["suspended"]
 
     if user.client_id is not None:
         roles.append("client")
