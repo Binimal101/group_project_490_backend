@@ -29,6 +29,7 @@ from src.api.roles.client.fitness import router as client_fitness_router
 from src.api.roles.client.telemetry import router as client_telemetry_router
 from src.api.roles.coach.fitness import router as coach_fitness_router
 from src.api.roles.admin.admin import router as admin_router
+from src.api.public import router as public_router
 
 app = FastAPI(title="Group 6 490 Project API")
 
@@ -53,6 +54,7 @@ app.include_router(client_fitness_router)
 app.include_router(client_telemetry_router)
 app.include_router(coach_fitness_router)
 app.include_router(admin_router)
+app.include_router(public_router)
 
 @app.get("/me")  # get_current_account assumes they pass a valid jwt as bearer
 def read_current_account(user = Depends(get_active_account)):
