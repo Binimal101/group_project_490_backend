@@ -61,6 +61,15 @@ class InitialSurveyInput(BaseModel): #creates a client
     availabilities: List[Availability]
     initial_health_metric: HealthMetrics
 
+    @field_validator("age")
+    @classmethod
+    def validate_age(cls, value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return value
+        if value < 18 or value > 90:
+            raise ValueError("Age must be between 18 and 90")
+        return value
+
     @model_validator(mode="after")
     def validate_nested_models(self):
         # Ensure nested SQLModel instances are fully validated/coerced
