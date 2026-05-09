@@ -57,6 +57,9 @@ class WorkoutPlan(SQLModelLU, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     strata_name: str # this is the name of the grouping for workout_plan_activities
+    is_public: bool = Field(default=False)
+    is_hidden: bool = Field(default=False)
+    created_by_account_id: Optional[int] = Field(default=None, foreign_key="account.id")
 
 
 class WorkoutPlanActivity(SQLModelLU, table=True):

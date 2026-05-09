@@ -30,6 +30,7 @@ from src.api.roles.client.domain import (
     ClientBillingCycleResponse,
     AssignWorkoutPlanInput,
     AssignWorkoutPlanResponse,
+    CheckSchedulableInput,
     PayInvoiceInput,
     PayInvoiceResponse,
     AvailabilityResponse,
@@ -246,6 +247,7 @@ def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_sessio
     Assigns a workout plan to the authenticated client across one or more time blocks.
     Each block becomes its own ClientWorkoutPlan row sharing the same workout_plan_id.
     Validates every block against the account's date-based availability and any busy slots.
+    Blocks may be marked repeats_weekly=True (with an optional recurrence_end_dt).
     """
     if acc.client_id is None:
         raise HTTPException(404, detail="Client profile not found")
@@ -257,25 +259,39 @@ def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_sessio
     if plan is None:
         raise HTTPException(404, detail="Workout plan not found")
 
-    block_pairs = [(b.start_dt, b.end_dt) for b in payload.blocks]
     created_ids = []
-    for start_dt, end_dt in block_pairs:
-        validate_schedulable(db, acc.id, start_dt, end_dt)
+    for b in payload.blocks:
+        validate_schedulable(db, acc.id, b.start_dt, b.end_dt)
         cwp = ClientWorkoutPlan(
             client_id=acc.client_id,
             workout_plan_id=payload.workout_plan_id,
-            start_time=start_dt,
-            end_time=end_dt,
+            start_time=b.start_dt,
+            end_time=b.end_dt,
+            repeats_weekly=b.repeats_weekly,
+            recurrence_end_dt=b.recurrence_end_dt,
         )
         db.add(cwp)
         db.flush()
         if cwp.id is None:
             raise HTTPException(500, detail="Something went wrong while assigning the workout plan")
-        create_busy_for_plan(db, acc.id, cwp.id, start_dt, end_dt)
+        create_busy_for_plan(db, acc.id, cwp.id, b.start_dt, b.end_dt)
         created_ids.append(cwp.id)
 
     db.commit()
     return AssignWorkoutPlanResponse(client_workout_plan_ids=created_ids)
+
+
+@router.post("/check_schedulable")
+def check_schedulable(
+    payload: CheckSchedulableInput,
+    db = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    """Dry-run availability + busy-slot check. Returns 200 if the window is schedulable, 409 otherwise."""
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+    validate_schedulable(db, acc.id, payload.start_dt, payload.end_dt)
+    return {"ok": True}
 
 
 @router.get("/availability")
@@ -714,6 +730,10 @@ def query_hirable_coaches(
             select(Certifications).join(CoachCertifications, CoachCertifications.certification_id == Certifications.id).where(CoachCertifications.coach_id == r.coach_id)
         ).all()
 
+        pricing = db.exec(
+            select(PricingPlan).where(PricingPlan.coach_id == r.coach_id)
+        ).first()
+
         result.append(
             {
                 "coach_id": r.coach_id,
@@ -727,6 +747,8 @@ def query_hirable_coaches(
                 "rating_count": int(r.rating_count) if r.rating_count is not None else 0,
                 "experiences": exps,
                 "certifications": certs,
+                "payment_interval": pricing.payment_interval.value if pricing else None,
+                "price_cents": pricing.price_cents if pricing else None,
             }
         )
 

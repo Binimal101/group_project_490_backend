@@ -10,7 +10,7 @@ from src.database.workouts_and_activities.models import WorkoutPlanActivity
 from src.database.account.models import Account
 from src.api.dependencies import get_client_account, PaginationParams
 from src.database.client.models import ClientWorkoutPlan
-from src.api.roles.services import remove_busy_for_plan
+from src.api.roles.services import remove_busy_for_plan, list_scheduled_plans_for_client_in_range
 from src.database.meal.models import ClientPrescribedMeal
 from src.database.telemetry.models import (
     ClientTelemetry, 
@@ -343,15 +343,106 @@ def _create_survey_response(survey, telemetry, completed_key: str, response_mode
 def get_or_create_daily_survey(db: Session, client_id: int) -> Tuple[ClientTelemetry, DailyMoodSurvey]:
     return _get_or_create_daily_survey(db, client_id, DailyMoodSurvey)
 
+class LogWorkoutActivityPayload(SQLModel):
+    cwp_id: int
+    workout_plan_activity_id: int
+    local_date: str  # "YYYY-MM-DD" client's local date
+    completed_reps: Optional[int] = None
+    completed_sets: Optional[int] = None
+    completed_duration: Optional[int] = None
+    estimated_calories: Optional[float] = None
+
+    @field_validator("completed_reps", "completed_sets", "completed_duration", "estimated_calories")
+    @classmethod
+    def validate_non_negative(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("Value cannot be negative")
+        return v
+
+
+@router.post("/log_workout_activity")
+def log_workout_activity_endpoint(
+    payload: LogWorkoutActivityPayload,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.client_id is None:
+        raise HTTPException(404, detail="Client profile not found")
+
+    cwp = db.get(ClientWorkoutPlan, payload.cwp_id)
+    if cwp is None or cwp.client_id != acc.client_id:
+        raise HTTPException(400, detail="Workout plan not found or not yours")
+
+    try:
+        from datetime import date as date_type
+        requested_date = datetime.strptime(payload.local_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(400, detail="Invalid local_date format, expected YYYY-MM-DD")
+
+    def _ensure_aware_local(dt: datetime) -> datetime:
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+    start_dt = _ensure_aware_local(cwp.start_time)
+    start_date = start_dt.date()
+
+    if not cwp.repeats_weekly:
+        occurs = start_date == requested_date
+    else:
+        if requested_date < start_date:
+            occurs = False
+        else:
+            cutoff_ok = True
+            if cwp.recurrence_end_dt is not None:
+                cutoff_date = _ensure_aware_local(cwp.recurrence_end_dt).date()
+                cutoff_ok = requested_date < cutoff_date
+            occurs = cutoff_ok and ((requested_date - start_date).days % 7 == 0)
+
+    if not occurs:
+        raise HTTPException(400, detail=f"This workout is not scheduled for {payload.local_date}")
+
+    has_metric = any(v is not None for v in [
+        payload.completed_reps, payload.completed_sets,
+        payload.completed_duration, payload.estimated_calories,
+    ])
+    if not has_metric:
+        raise HTTPException(400, detail="Provide at least one of completed_reps, completed_sets, completed_duration, estimated_calories")
+
+    workout_telemetry = create_telemetry_event(db, acc.client_id, TELEMETRY_WORKOUT, commit=False)
+
+    completed_details = CompletedWorkoutActivity(
+        completed_reps=payload.completed_reps,
+        completed_sets=payload.completed_sets,
+        completed_duration=payload.completed_duration,
+        estimated_calories=payload.estimated_calories,
+    )
+    db.add(completed_details)
+    db.flush()
+
+    completed_workout = CompletedWorkout(
+        workout_plan_activity_id=payload.workout_plan_activity_id,
+        completed_workout_details_id=completed_details.id,
+        client_telemetry_id=workout_telemetry.id,
+    )
+    db.add(completed_workout)
+    db.commit()
+    db.refresh(completed_workout)
+
+    return {"id": completed_workout.id, "logged": True}
+
+
 @router.get("/query/plans")
 def query_client_workout_plans(
+    from_dt: Optional[datetime] = None,
+    to_dt: Optional[datetime] = None,
     pagination: PaginationParams = Depends(PaginationParams),
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
-    query = select(ClientWorkoutPlan).where(ClientWorkoutPlan.client_id == acc.client_id)
-    plans = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
-    return plans
+    from datetime import timezone
+    now = datetime.now(timezone.utc)
+    range_start = from_dt if from_dt is not None else now
+    range_end = to_dt if to_dt is not None else now + timedelta(weeks=8)
+    return list_scheduled_plans_for_client_in_range(db, acc.client_id, range_start, range_end)
 
 
 @router.delete("/client_workout_plan/{plan_id}")

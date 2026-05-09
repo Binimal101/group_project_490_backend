@@ -25,6 +25,8 @@ class HirableCoachItem(BaseModel):
     rating_count: int = 0
     experiences: Optional[List[Experience]] = None
     certifications: Optional[List[Certifications]] = None
+    payment_interval: Optional[str] = None
+    price_cents: Optional[int] = None
 
 class StepCountUpdateInput(BaseModel):
     step_count: int
@@ -104,6 +106,8 @@ class UpdateClientInfoInput(BaseModel):
 class ScheduleBlock(BaseModel):
     start_dt: datetime
     end_dt: datetime
+    repeats_weekly: bool = False
+    recurrence_end_dt: Optional[datetime] = None
 
     @model_validator(mode="after")
     def _ordered(self):
@@ -121,6 +125,11 @@ class AssignWorkoutPlanInput(BaseModel):
         if not self.blocks:
             raise HTTPException(400, detail="At least one schedule block is required")
         return self
+
+
+class CheckSchedulableInput(BaseModel):
+    start_dt: datetime
+    end_dt: datetime
 
 #Responses
 class MyCoachResponse(BaseModel):

@@ -322,3 +322,315 @@ def test_prescribe_merged_contiguous_availability(
         headers=coach_auth_header,
     )
     assert resp.status_code == 200, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Recurring client_workout_plan tests
+# ---------------------------------------------------------------------------
+
+def test_assign_repeats_weekly_creates_cwp(
+    test_client, client_auth_header, seed_workout_activity, seed_availability
+):
+    """Client self-assigns a recurring weekly plan — CWP is created with repeats_weekly=True."""
+    plan_id = _make_plan(test_client, client_auth_header, seed_workout_activity)
+    start = _future()
+    end = start + timedelta(hours=1, minutes=30)
+    seed_availability(client_auth_header, start_dt=start, end_dt=end)
+
+    resp = test_client.post(
+        "/roles/client/assign_plan",
+        json={
+            "workout_plan_id": plan_id,
+            "blocks": [{"start_dt": start.isoformat(), "end_dt": end.isoformat(), "repeats_weekly": True}],
+        },
+        headers=client_auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    cwp_ids = resp.json()["client_workout_plan_ids"]
+    assert len(cwp_ids) == 1
+
+
+def test_assign_repeats_weekly_with_recurrence_end(
+    test_client, client_auth_header, seed_workout_activity, seed_availability
+):
+    """Client assigns a recurring weekly plan with an explicit end date — field is stored."""
+    plan_id = _make_plan(test_client, client_auth_header, seed_workout_activity)
+    start = _future()
+    end = start + timedelta(hours=1)
+    recur_end = start + timedelta(weeks=4)
+    seed_availability(client_auth_header, start_dt=start, end_dt=end)
+
+    resp = test_client.post(
+        "/roles/client/assign_plan",
+        json={
+            "workout_plan_id": plan_id,
+            "blocks": [{
+                "start_dt": start.isoformat(),
+                "end_dt": end.isoformat(),
+                "repeats_weekly": True,
+                "recurrence_end_dt": recur_end.isoformat(),
+            }],
+        },
+        headers=client_auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_recurring_cwp_projected_in_query(
+    test_client, client_auth_header, seed_workout_activity, seed_availability
+):
+    """A weekly-recurring CWP appears on multiple weeks when queried with a wide range."""
+    plan_id = _make_plan(test_client, client_auth_header, seed_workout_activity)
+    start = _future()
+    end = start + timedelta(hours=1)
+    seed_availability(client_auth_header, start_dt=start, end_dt=end)
+
+    assign_resp = test_client.post(
+        "/roles/client/assign_plan",
+        json={
+            "workout_plan_id": plan_id,
+            "blocks": [{"start_dt": start.isoformat(), "end_dt": end.isoformat(), "repeats_weekly": True}],
+        },
+        headers=client_auth_header,
+    )
+    assert assign_resp.status_code == 200, assign_resp.text
+
+    query_from = start.isoformat()
+    query_to = (start + timedelta(weeks=3)).isoformat()
+    resp = test_client.get(
+        f"/roles/client/fitness/query/plans?from_dt={query_from}&to_dt={query_to}",
+        headers=client_auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    matching = [r for r in rows if r["workout_plan_id"] == plan_id]
+    assert len(matching) >= 1
+    total_occurrences = sum(len(r.get("occurrences", [])) for r in matching)
+    assert total_occurrences >= 2, f"Expected >=2 occurrences, got {total_occurrences}"
+
+
+def test_check_schedulable_endpoint_ok(
+    test_client, client_auth_header, seed_availability
+):
+    """check_schedulable returns 200 when the window is fully available."""
+    start = _future()
+    end = start + timedelta(hours=1)
+    seed_availability(client_auth_header, start_dt=start, end_dt=end)
+
+    resp = test_client.post(
+        "/roles/client/check_schedulable",
+        json={"start_dt": start.isoformat(), "end_dt": end.isoformat()},
+        headers=client_auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_check_schedulable_endpoint_fails(
+    test_client, client_auth_header
+):
+    """check_schedulable returns 409 when no availability exists for the window."""
+    start = _future()
+    end = start + timedelta(hours=1)
+
+    resp = test_client.post(
+        "/roles/client/check_schedulable",
+        json={"start_dt": start.isoformat(), "end_dt": end.isoformat()},
+        headers=client_auth_header,
+    )
+    assert resp.status_code == 409, resp.text
+
+
+def test_prescribe_recurring_plan(
+    test_client, create_client, coach_auth_header, seed_workout_activity, db_session, seed_availability
+):
+    """Coach prescribes a recurring weekly plan to a client → 200."""
+    plan_id = _make_plan(test_client, coach_auth_header, seed_workout_activity)
+    client_header, client_id = _setup_coach_client(
+        test_client, create_client, coach_auth_header, db_session, "prescribe_recurring"
+    )
+
+    start = _future(days=23)
+    end = start + timedelta(hours=1)
+    seed_availability(client_header, start_dt=start, end_dt=end)
+
+    resp = test_client.post(
+        "/roles/coach/prescribe_plan",
+        json={
+            "workout_plan_id": plan_id,
+            "client_id": client_id,
+            "blocks": [{"start_dt": start.isoformat(), "end_dt": end.isoformat(), "repeats_weekly": True}],
+        },
+        headers=coach_auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Recurring CWP conflict tests
+# ---------------------------------------------------------------------------
+
+def test_recurring_cwp_conflicts_with_same_slot_next_week_static_avail(
+    test_client, client_auth_header, seed_workout_activity, seed_availability
+):
+    """A recurring weekly CWP conflicts when a second plan targets the same slot next week,
+    even though only a static BusySlot was created for the first occurrence."""
+    plan_a = _make_plan(test_client, client_auth_header, seed_workout_activity)
+    plan_b = _make_plan(test_client, client_auth_header, seed_workout_activity)
+    start = _future()
+    end = start + timedelta(hours=1)
+    # Cover two consecutive same-day slots (this week and next)
+    seed_availability(client_auth_header, start_dt=start, end_dt=end)
+    seed_availability(client_auth_header, start_dt=start + timedelta(weeks=1), end_dt=end + timedelta(weeks=1))
+
+    # Assign plan A as a recurring weekly plan
+    resp = test_client.post(
+        "/roles/client/assign_plan",
+        json={
+            "workout_plan_id": plan_a,
+            "blocks": [{"start_dt": start.isoformat(), "end_dt": end.isoformat(), "repeats_weekly": True}],
+        },
+        headers=client_auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Plan B targets the same time slot next week → projected recurring CWP should conflict
+    start2 = start + timedelta(weeks=1)
+    end2 = end + timedelta(weeks=1)
+    resp2 = test_client.post(
+        "/roles/client/assign_plan",
+        json={
+            "workout_plan_id": plan_b,
+            "blocks": [{"start_dt": start2.isoformat(), "end_dt": end2.isoformat()}],
+        },
+        headers=client_auth_header,
+    )
+    assert resp2.status_code == 409, resp2.text
+    conflicts = resp2.json().get("detail", {}).get("conflicts", [])
+    assert len(conflicts) >= 1
+
+
+def test_recurring_cwp_conflict_before_recurrence_end_dt(
+    test_client, client_auth_header, seed_workout_activity, seed_availability
+):
+    """A recurring CWP with recurrence_end_dt still blocks slots before the cutoff → 409."""
+    plan_a = _make_plan(test_client, client_auth_header, seed_workout_activity)
+    plan_b = _make_plan(test_client, client_auth_header, seed_workout_activity)
+    start = _future()
+    end = start + timedelta(hours=1)
+    recur_end = start + timedelta(weeks=4)
+
+    # Wide availability covering the recurring window
+    seed_availability(client_auth_header, start_dt=start, end_dt=start + timedelta(weeks=5))
+
+    # Assign plan A as recurring with explicit end date
+    resp = test_client.post(
+        "/roles/client/assign_plan",
+        json={
+            "workout_plan_id": plan_a,
+            "blocks": [{
+                "start_dt": start.isoformat(),
+                "end_dt": end.isoformat(),
+                "repeats_weekly": True,
+                "recurrence_end_dt": recur_end.isoformat(),
+            }],
+        },
+        headers=client_auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Week 2 (within recurring window) → 409 conflict
+    start2 = start + timedelta(weeks=2)
+    end2 = end + timedelta(weeks=2)
+    resp2 = test_client.post(
+        "/roles/client/assign_plan",
+        json={
+            "workout_plan_id": plan_b,
+            "blocks": [{"start_dt": start2.isoformat(), "end_dt": end2.isoformat()}],
+        },
+        headers=client_auth_header,
+    )
+    assert resp2.status_code == 409, resp2.text
+
+
+def test_recurring_cwp_no_conflict_after_recurrence_end_dt(
+    test_client, client_auth_header, seed_workout_activity, seed_availability
+):
+    """A recurring CWP with recurrence_end_dt does NOT block slots after the cutoff → 200."""
+    plan_a = _make_plan(test_client, client_auth_header, seed_workout_activity)
+    plan_b = _make_plan(test_client, client_auth_header, seed_workout_activity)
+    start = _future()
+    end = start + timedelta(hours=1)
+    # Recurrence ends after 2 weeks
+    recur_end = start + timedelta(weeks=2)
+
+    # Wide availability
+    seed_availability(client_auth_header, start_dt=start, end_dt=start + timedelta(weeks=5))
+
+    # Assign plan A as recurring, expiring at week 2
+    resp = test_client.post(
+        "/roles/client/assign_plan",
+        json={
+            "workout_plan_id": plan_a,
+            "blocks": [{
+                "start_dt": start.isoformat(),
+                "end_dt": end.isoformat(),
+                "repeats_weekly": True,
+                "recurrence_end_dt": recur_end.isoformat(),
+            }],
+        },
+        headers=client_auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Week 3 (past recurrence_end_dt) → no conflict, should succeed
+    start3 = start + timedelta(weeks=3)
+    end3 = end + timedelta(weeks=3)
+    resp3 = test_client.post(
+        "/roles/client/assign_plan",
+        json={
+            "workout_plan_id": plan_b,
+            "blocks": [{"start_dt": start3.isoformat(), "end_dt": end3.isoformat()}],
+        },
+        headers=client_auth_header,
+    )
+    assert resp3.status_code == 200, resp3.text
+
+
+def test_recurring_cwp_conflicts_with_repeating_weekly_availability_slot(
+    test_client, client_auth_header, seed_workout_activity, seed_availability
+):
+    """A recurring CWP conflicts with a new plan on the same weekly slot,
+    even when the client's availability is itself set to repeat weekly."""
+    plan_a = _make_plan(test_client, client_auth_header, seed_workout_activity)
+    plan_b = _make_plan(test_client, client_auth_header, seed_workout_activity)
+    start = _future()
+    end = start + timedelta(hours=1)
+
+    # Repeating weekly availability covers every week indefinitely
+    seed_availability(client_auth_header, start_dt=start, end_dt=end, repeats_weekly=True)
+
+    # Assign plan A as recurring weekly
+    resp = test_client.post(
+        "/roles/client/assign_plan",
+        json={
+            "workout_plan_id": plan_a,
+            "blocks": [{"start_dt": start.isoformat(), "end_dt": end.isoformat(), "repeats_weekly": True}],
+        },
+        headers=client_auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Plan B targets same slot next week — availability covers it, but CWP recurrence conflicts
+    start2 = start + timedelta(weeks=1)
+    end2 = end + timedelta(weeks=1)
+    resp2 = test_client.post(
+        "/roles/client/assign_plan",
+        json={
+            "workout_plan_id": plan_b,
+            "blocks": [{"start_dt": start2.isoformat(), "end_dt": end2.isoformat()}],
+        },
+        headers=client_auth_header,
+    )
+    assert resp2.status_code == 409, resp2.text
+    conflicts = resp2.json().get("detail", {}).get("conflicts", [])
+    assert len(conflicts) >= 1

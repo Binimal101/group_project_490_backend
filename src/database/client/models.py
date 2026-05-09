@@ -39,6 +39,8 @@ class ClientWorkoutPlan(SQLModelLU, table=True):
   workout_plan_id : int = Field(foreign_key="workout_plan.id")
   start_time : datetime
   end_time : datetime
+  repeats_weekly: bool = Field(default=False)
+  recurrence_end_dt: Optional[datetime] = None
 
   @model_validator(mode="after")
   def validate_time(self):

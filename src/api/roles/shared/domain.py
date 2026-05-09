@@ -34,6 +34,7 @@ class WorkoutPlanActivityInput(BaseModel):
 
 class CreateWorkoutPlanInput(BaseModel):
     strata_name: str
+    is_public: bool = False
     activities: List[WorkoutPlanActivityInput]
 
 class ClientCoachContext(BaseModel):

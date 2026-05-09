@@ -67,6 +67,7 @@ from src.api.roles.services import (
     delete_busy_slot_row,
     list_availability_for_account,
     list_busy_slots_for_account,
+    list_scheduled_plans_for_client_in_range,
     remove_busy_for_plan,
     update_availability_row,
     validate_schedulable,
@@ -273,21 +274,27 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
     if acc.id is not None and is_blocked_between(db, acc.id, client_account.id):
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
 
-    block_pairs = [(b.start_dt, b.end_dt) for b in payload.blocks]
+    # Transfer ownership of the plan to the client (they paid for it)
+    if plan.created_by_account_id != client_account.id:
+        plan.created_by_account_id = client_account.id
+        db.add(plan)
+
     created_ids = []
-    for start_dt, end_dt in block_pairs:
-        validate_schedulable(db, client_account.id, start_dt, end_dt)
+    for b in payload.blocks:
+        validate_schedulable(db, client_account.id, b.start_dt, b.end_dt)
         cwp = ClientWorkoutPlan(
             client_id=payload.client_id,
             workout_plan_id=payload.workout_plan_id,
-            start_time=start_dt,
-            end_time=end_dt,
+            start_time=b.start_dt,
+            end_time=b.end_dt,
+            repeats_weekly=b.repeats_weekly,
+            recurrence_end_dt=b.recurrence_end_dt,
         )
         db.add(cwp)
         db.flush()
         if cwp.id is None:
             raise HTTPException(500, detail="Something went wrong while prescribing the workout plan")
-        create_busy_for_plan(db, client_account.id, cwp.id, start_dt, end_dt)
+        create_busy_for_plan(db, client_account.id, cwp.id, b.start_dt, b.end_dt)
         created_ids.append(cwp.id)
 
     if client_account.id is not None:
@@ -295,7 +302,7 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
             account_id=client_account.id,
             fav_category="workout_plan",
             message=f"{acc.name} prescribed a new workout plan.",
-            details=f"A new workout plan has been scheduled across {len(block_pairs)} session(s). Check your schedule for details.",
+            details=f"A new workout plan has been scheduled across {len(payload.blocks)} session(s). Check your schedule for details.",
         ))
 
     db.commit()
@@ -317,6 +324,29 @@ def _require_active_relationship(db, coach_id: int, client_id: int):
     if relationship is None:
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
     return relationship
+
+
+class CheckSchedulableForClientInput(BaseModel):
+    client_id: int
+    start_dt: datetime
+    end_dt: datetime
+
+
+@router.post("/check_schedulable_for_client")
+def check_schedulable_for_client(
+    payload: CheckSchedulableForClientInput,
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """Dry-run availability + busy-slot check for a client. Returns 200 or 409."""
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    _require_active_relationship(db, acc.coach_id, payload.client_id)
+    client_account = db.exec(select(Account).where(Account.client_id == payload.client_id)).first()
+    if client_account is None or client_account.id is None:
+        raise HTTPException(404, detail="Client account not found")
+    validate_schedulable(db, client_account.id, payload.start_dt, payload.end_dt)
+    return {"ok": True}
 
 
 @router.get("/client/{client_id}/availability")
@@ -360,6 +390,8 @@ def coach_view_client_busy_slots(
 @router.get("/client/{client_id}/client_workout_plans")
 def coach_view_client_plans(
     client_id: int,
+    from_dt: Optional[datetime] = None,
+    to_dt: Optional[datetime] = None,
     db = Depends(get_session),
     acc: Account = Depends(get_coach_account),
 ):
@@ -367,10 +399,11 @@ def coach_view_client_plans(
         raise HTTPException(404, detail="No coach profile found for this account")
     _require_active_relationship(db, acc.coach_id, client_id)
 
-    plans = db.exec(
-        select(ClientWorkoutPlan).where(ClientWorkoutPlan.client_id == client_id)
-    ).all()
-    return plans
+    from datetime import timezone
+    now = datetime.now(timezone.utc)
+    range_start = from_dt if from_dt is not None else now
+    range_end = to_dt if to_dt is not None else now + timedelta(weeks=8)
+    return list_scheduled_plans_for_client_in_range(db, client_id, range_start, range_end)
 
 
 @router.delete("/client_workout_plan/{plan_id}")
