@@ -147,10 +147,11 @@ def _raise_conflict(detail: str, conflicts: List[Dict[str, Any]]) -> None:
 
 
 def validate_schedulable(db: Session, account_id: int, start_dt: datetime, end_dt: datetime) -> None:
-    if is_range_fully_available(db, account_id, start_dt, end_dt):
-        conflicts = find_busy_conflicts(db, account_id, start_dt, end_dt)
-        if not conflicts:
-            return
+    if not is_range_fully_available(db, account_id, start_dt, end_dt):
+        _raise_conflict(
+            "The selected time window is not fully covered by your availability.",
+            [],
+        )
 
     conflicts = find_busy_conflicts(db, account_id, start_dt, end_dt)
     if conflicts:
@@ -158,11 +159,6 @@ def validate_schedulable(db: Session, account_id: int, start_dt: datetime, end_d
             f"You have {len(conflicts)} booked workout(s) in this window. Remove them first.",
             conflicts,
         )
-
-    _raise_conflict(
-        "The selected time window is not fully covered by availability.",
-        [],
-    )
 
 
 def validate_availability_edit_safe(

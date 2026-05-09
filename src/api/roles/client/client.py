@@ -411,8 +411,12 @@ def create_coach_request(coach_id: int, db = Depends(get_session), acc: Account 
     if acc.id is not None and coach_account.id is not None and is_blocked_between(db, acc.id, coach_account.id):
         raise HTTPException(403, detail="Cannot create a coach request with a blocked account")
 
-    existing_request = db.query(ClientCoachRequest).filter_by(
-        client_id=client.id, coach_id=coach.id, is_accepted=None
+    existing_request = db.exec(
+        select(ClientCoachRequest).where(
+            ClientCoachRequest.client_id == client.id,
+            ClientCoachRequest.coach_id == coach.id,
+            ClientCoachRequest.is_accepted == None,
+        )
     ).first()
 
     if existing_request:
@@ -781,7 +785,19 @@ def coach_review(coach_id: int, rating: float, review_text: str, db = Depends(ge
     
     if acc.client_id is None:
         raise HTTPException(403, detail="You are not authorized to use this feature")
-    
+
+    has_relationship = db.exec(
+        select(ClientCoachRelationship)
+        .join(ClientCoachRequest, ClientCoachRelationship.request_id == ClientCoachRequest.id)
+        .where(
+            ClientCoachRequest.client_id == acc.client_id,
+            ClientCoachRequest.coach_id == coach_id,
+        )
+    ).first()
+
+    if has_relationship is None:
+        raise HTTPException(403, detail="You can only review coaches you have or had a relationship with")
+
     review = CoachReviews(client_id=acc.client_id, coach_id=coach_id, rating=rating, review_text=review_text)
 
     db.add(review)
