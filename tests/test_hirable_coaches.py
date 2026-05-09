@@ -17,7 +17,11 @@ def _create_and_verify_coach(test_client, db_session, admin_auth_header, name, e
     header = {"Authorization": f"Bearer {token}"}
 
     # Become a client
-    test_client.post("/roles/client/initial_survey", json=build_client_init_payload(), headers=header)
+    test_client.post(
+        "/roles/client/initial_survey",
+        json=build_client_init_payload(age=age, gender=gender),
+        headers=header,
+    )
 
     # Request coach creation
     resp = test_client.post("/roles/coach/request_coach_creation", json=build_coach_request_payload(), headers=header)
