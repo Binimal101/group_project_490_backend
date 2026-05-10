@@ -151,11 +151,16 @@ class CompletedMealActivity(SQLModelLU, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     client_prescribed_meal_id: Optional[int] = Field(default=None, foreign_key="client_prescribed_meal.id", ondelete="CASCADE")
     on_demand_meal_id: Optional[int] = Field(default=None, foreign_key="meal.id")
+    # Multiple meals per day are allowed (breakfast + lunch + dinner all share
+    # the same client_telemetry row), so client_telemetry_id is NOT unique.
     client_telemetry_id: int = Field(
         foreign_key="client_telemetry.id",
         ondelete="CASCADE",
-        sa_column_kwargs={"unique": True},
     )
+    # Tag each log with its kind ("breakfast"/"lunch"/"dinner"/"snack") so the
+    # client dashboard can group meals and the coach can review the plan
+    # adherence per slot.
+    meal_kind: Optional[str] = Field(default=None)
 
 
 class CompletedWorkout(SQLModelLU, table=True):

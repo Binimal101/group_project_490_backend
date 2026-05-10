@@ -1345,32 +1345,69 @@ def get_client_progress_pictures(
 
 @router.get(
     "/client_meals/{client_id}",
-    response_model=list[CompletedMealActivity],
     tags=["coach", "client-telemetry"],
 )
 def get_client_meal_history(
     client_id: int,
+    on_date: Optional[str] = Query(None, description="Filter to a single date (YYYY-MM-DD); omit for full history"),
     pagination: PaginationParams = Depends(PaginationParams),
     db=Depends(get_session),
     acc: Account = Depends(get_coach_account),
 ):
-    """
-    Return paginated logged-meal history for a specific client.
+    """Return logged-meal history for a specific client, enriched with the
+    resolved meal name + computed calories/macros so the coach UI can render
+    it directly. Pass `on_date` (YYYY-MM-DD) to scope to a single day —
+    used by the client-profile overlay's "what they ate today" section.
+    Coach must currently coach the client (active or pending request)."""
+    # Imported inline to avoid circular imports — coach.py already pulls a
+    # lot from client.* and adding meal helpers at module top would tangle
+    # the import graph further.
+    from src.api.roles.client.telemetry import (
+        _resolve_meal_for_activity,
+        _meal_macros,
+    )
 
-    The coach must hold a pending request or an active relationship with the
-    client. Results are ordered newest first.
-    """
     if acc.coach_id is None:
         raise HTTPException(404, detail="No coach profile found for this account")
     _authorize_coach_for_client(db, acc.coach_id, client_id)
 
     query = (
-        select(CompletedMealActivity)
+        select(CompletedMealActivity, ClientTelemetry)
         .join(ClientTelemetry, CompletedMealActivity.client_telemetry_id == ClientTelemetry.id)
         .where(ClientTelemetry.client_id == client_id)
         .order_by(CompletedMealActivity.id.desc())
     )
-    return db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+    rows = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+
+    parsed_date = None
+    if on_date:
+        try:
+            parsed_date = datetime.strptime(on_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(400, "on_date must be YYYY-MM-DD")
+
+    out = []
+    for activity, telemetry in rows:
+        if parsed_date is not None:
+            tel_date = telemetry.date.date() if hasattr(telemetry.date, "date") else telemetry.date
+            if tel_date != parsed_date:
+                continue
+        meal = _resolve_meal_for_activity(db, activity)
+        macros = _meal_macros(db, meal.id) if meal else {"calories": 0.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0}
+        out.append({
+            "id": activity.id,
+            "client_prescribed_meal_id": activity.client_prescribed_meal_id,
+            "on_demand_meal_id": activity.on_demand_meal_id,
+            "meal_id": meal.id if meal else None,
+            "meal_name": meal.meal_name if meal else None,
+            "meal_kind": activity.meal_kind,
+            "calories": macros["calories"],
+            "protein_g": macros["protein_g"],
+            "carbs_g": macros["carbs_g"],
+            "fat_g": macros["fat_g"],
+            "logged_at": telemetry.date.isoformat() if telemetry.date else None,
+        })
+    return out
 
 
 @router.get(

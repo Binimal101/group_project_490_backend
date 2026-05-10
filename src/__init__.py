@@ -57,6 +57,11 @@ if not is_testing:
     SUPABASE_URL = os.getenv("SUPABASE_URL", None)
     SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", None)
 
+    # USDA FoodData Central — used by /api/foods/* routes for nutrition data.
+    # Falls back to DEMO_KEY (heavy rate-limited) so dev environments aren't
+    # blocked when this isn't set. Production should set a real key.
+    USDA_API_KEY = os.getenv("USDA_API_KEY", "DEMO_KEY")
+
     # try to coerce into SQLAlchemy and see if it actually connects
     try:
         create_engine(db_conn_str).connect()
@@ -95,6 +100,7 @@ class config:
     GCP_CLIENT_ID: str = gcp_client_id or None  # type: ignore
     SUPABASE_URL: str = SUPABASE_URL or None  # type: ignore
     SUPABASE_SERVICE_KEY: str = SUPABASE_SERVICE_KEY or None  # type: ignore
+    USDA_API_KEY: str = (locals().get("USDA_API_KEY") or os.getenv("USDA_API_KEY", "DEMO_KEY"))  # type: ignore
 
 if is_testing:
     print("Config loaded: running in TESTING mode using TESTING_DATABASE_URL")

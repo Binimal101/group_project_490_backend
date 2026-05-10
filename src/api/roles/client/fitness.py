@@ -127,6 +127,10 @@ class StepsSurveySubmitPayload(SQLModel):
 class MealSurveySubmitPayload(SQLModel):
     client_prescribed_meal_id: Optional[int] = None
     on_demand_meal_id: Optional[int] = None
+    # Optional tag for the slot this meal fills (breakfast/lunch/dinner/snack).
+    # Stored on the resulting CompletedMealActivity row so the client UI can
+    # group logs by kind. NULL = unlabeled (treated as "anytime").
+    meal_kind: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_meal_choice(self):
@@ -878,19 +882,17 @@ def submit_daily_meal_survey(
         TELEMETRY_MEAL,
     )
 
-    completed_meal = db.get(CompletedMealActivity, survey.completed_meal_activity_id) if survey.completed_meal_activity_id else None
-    if completed_meal is None:
-        completed_meal = db.exec(
-            select(CompletedMealActivity).where(
-                CompletedMealActivity.client_telemetry_id == meal_telemetry.id
-            )
-        ).first()
-
-    if completed_meal is None:
-        completed_meal = CompletedMealActivity(client_telemetry_id=meal_telemetry.id)
-
-    completed_meal.client_prescribed_meal_id = payload.client_prescribed_meal_id
-    completed_meal.on_demand_meal_id = payload.on_demand_meal_id
+    # Multiple meals per day are now supported (breakfast + lunch + dinner all
+    # share the same telemetry row), so each submit creates a fresh
+    # CompletedMealActivity rather than overwriting today's. The survey's
+    # completed_meal_activity_id still tracks the *latest* log so the daily
+    # check-in counts the day as engaged once any meal is logged.
+    completed_meal = CompletedMealActivity(
+        client_telemetry_id=meal_telemetry.id,
+        client_prescribed_meal_id=payload.client_prescribed_meal_id,
+        on_demand_meal_id=payload.on_demand_meal_id,
+        meal_kind=payload.meal_kind,
+    )
     db.add(completed_meal)
     db.flush()
 
