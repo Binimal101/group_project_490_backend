@@ -158,8 +158,6 @@ def client_coach_relationship_context(
 
     if relationship is None:
         raise HTTPException(status_code=404, detail="Relationship not found")
-    if not relationship.is_active:
-        raise HTTPException(status_code=409, detail="Relationship is no longer active")
 
     request = db.get(ClientCoachRequest, relationship.request_id)
     if request is None:

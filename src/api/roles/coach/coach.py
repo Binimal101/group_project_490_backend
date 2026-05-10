@@ -53,6 +53,7 @@ from src.database.telemetry.models import (
     DailyMealSurvey,
     CompletedMealActivity,
     CompletedWorkout,
+    CompletedWorkoutActivity,
     DailyProgressPicture,
 )
 from src.database.coach.models import Coach, CoachCertifications, CoachExperience, Experience, Certifications
@@ -60,6 +61,7 @@ from src.database.client.models import Client, FitnessGoals, ClientWorkoutPlan
 from src.database.role_management.models import CoachRequest
 from src.database.reports.models import ClientReport
 from src.api.roles.services import (
+    _fmt_block,
     create_availability_row,
     create_busy_for_plan,
     create_manual_busy_slot,
@@ -68,6 +70,7 @@ from src.api.roles.services import (
     list_availability_for_account,
     list_busy_slots_for_account,
     list_scheduled_plans_for_client_in_range,
+    notify_client_of_coach_action,
     remove_busy_for_plan,
     update_availability_row,
     validate_schedulable,
@@ -265,7 +268,6 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
 
     relationship = db.exec(select(ClientCoachRelationship).where(
         ClientCoachRelationship.request_id == request.id,
-        ClientCoachRelationship.is_active == True,
     )).first()
     if relationship is None:
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
@@ -274,10 +276,43 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
     if acc.id is not None and is_blocked_between(db, acc.id, client_account.id):
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
 
-    # Transfer ownership of the plan to the client (they paid for it)
-    if plan.created_by_account_id != client_account.id:
-        plan.created_by_account_id = client_account.id
-        db.add(plan)
+    # PRD v2: NO ownership transfer. The coach keeps `created_by_account_id`
+    # (so they can edit and re-prescribe). Forks can't be prescribed because
+    # they're, by definition, owned by a client and represent a personal copy.
+    if plan.is_forked:
+        raise HTTPException(
+            status_code=400,
+            detail="Forked plans cannot be prescribed. Build a new plan or prescribe the original.",
+        )
+    # Coach must own the plan they're prescribing.
+    if plan.created_by_account_id != acc.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only prescribe plans you authored.",
+        )
+
+    # Grant the client a library entry of source=prescribed.
+    from src.database.workouts_and_activities.models import (
+        PlanLibraryEntry, PlanLibrarySource,
+    )
+    existing_entry = db.exec(
+        select(PlanLibraryEntry)
+        .where(PlanLibraryEntry.account_id == client_account.id)
+        .where(PlanLibraryEntry.workout_plan_id == plan.id)
+        .where(PlanLibraryEntry.source == PlanLibrarySource.PRESCRIBED)
+    ).first()
+    if existing_entry is None:
+        db.add(PlanLibraryEntry(
+            account_id=client_account.id,
+            workout_plan_id=plan.id,
+            source=PlanLibrarySource.PRESCRIBED,
+            source_coach_account_id=acc.id,
+        ))
+    else:
+        # Re-prescribing after termination: clear revoked_at, refresh attribution.
+        existing_entry.source_coach_account_id = acc.id
+        existing_entry.revoked_at = None
+        db.add(existing_entry)
 
     created_ids = []
     for b in payload.blocks:
@@ -298,12 +333,22 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
         created_ids.append(cwp.id)
 
     if client_account.id is not None:
-        db.add(Notification(
-            account_id=client_account.id,
-            fav_category="workout_plan",
-            message=f"{acc.name} prescribed a new workout plan.",
-            details=f"A new workout plan has been scheduled across {len(payload.blocks)} session(s). Check your schedule for details.",
-        ))
+        n = len(payload.blocks)
+        first = payload.blocks[0]
+        activity_count = len(
+            db.exec(
+                select(WorkoutPlanActivity).where(WorkoutPlanActivity.workout_plan_id == payload.workout_plan_id)
+            ).all()
+        )
+        notify_client_of_coach_action(
+            db,
+            client_account.id,
+            message=f"{acc.name} scheduled '{plan.strata_name}' for you",
+            details=(
+                f"{n} session(s) · first block: {_fmt_block(first.start_dt, first.end_dt)}"
+                f" · {activity_count} activit{'y' if activity_count == 1 else 'ies'}"
+            ),
+        )
 
     db.commit()
     return PrescribeWorkoutPlanResponse(client_workout_plan_ids=created_ids)
@@ -319,7 +364,6 @@ def _require_active_relationship(db, coach_id: int, client_id: int):
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
     relationship = db.exec(select(ClientCoachRelationship).where(
         ClientCoachRelationship.request_id == request.id,
-        ClientCoachRelationship.is_active == True,
     )).first()
     if relationship is None:
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
@@ -425,13 +469,26 @@ def delete_prescribed_plan(plan_id: int, db = Depends(get_session), acc: Account
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
     relationship = db.exec(select(ClientCoachRelationship).where(
         ClientCoachRelationship.request_id == request.id,
-        ClientCoachRelationship.is_active == True,
     )).first()
     if relationship is None:
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
 
+    plan = db.get(WorkoutPlan, cwp.workout_plan_id)
+    plan_name = plan.strata_name if plan else "a workout plan"
+
+    client_account = db.exec(select(Account).where(Account.client_id == cwp.client_id)).first()
+
     remove_busy_for_plan(db, cwp.id)
     db.delete(cwp)
+
+    if client_account and client_account.id is not None:
+        notify_client_of_coach_action(
+            db,
+            client_account.id,
+            message=f"{acc.name} cancelled '{plan_name}'",
+            details=f"Originally scheduled {_fmt_block(cwp.start_time, cwp.end_time)}",
+        )
+
     db.commit()
     return {"details": "deleted"}
 
@@ -631,7 +688,6 @@ def get_my_accepted_clients(
         .where(
             ClientCoachRequest.coach_id == acc.coach_id,
             ClientCoachRequest.is_accepted == True,
-            ClientCoachRelationship.is_active == True,
         )
     )
     if text:
@@ -693,7 +749,6 @@ def lookup_client(client_id: int, db = Depends(get_session), acc: Account = Depe
         if req_for_rel:
             rel = db.exec(select(ClientCoachRelationship).where(
                 ClientCoachRelationship.request_id == req_for_rel.id,
-                ClientCoachRelationship.is_active == True
             )).first()
             if rel:
                 authorized = True
@@ -765,7 +820,7 @@ def accept_coach_request(request_id: int, db = Depends(get_session), acc: Accoun
         )
         db.add(n)
 
-    relationship = ClientCoachRelationship(request_id=request.id, created_at=datetime.utcnow(), is_active=True)
+    relationship = ClientCoachRelationship(request_id=request.id, created_at=datetime.utcnow())
     db.add(relationship)
     db.flush()
 
@@ -930,7 +985,6 @@ def get_my_clients(
         .where(
             ClientCoachRequest.coach_id == acc.coach_id,
             ClientCoachRequest.is_accepted.is_(True),
-            ClientCoachRelationship.is_active.is_(True),
         )
         .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
         .offset(pagination.skip)
@@ -1075,7 +1129,6 @@ def _authorize_coach_for_client(db, coach_id: int, client_id: int) -> None:
         rel = db.exec(
             select(ClientCoachRelationship).where(
                 ClientCoachRelationship.request_id == accepted.id,
-                ClientCoachRelationship.is_active == True,
             )
         ).first()
         if rel:
@@ -1203,6 +1256,61 @@ def get_client_workout_history(
         .order_by(CompletedWorkout.id.desc())
     )
     return db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+
+
+@router.get(
+    "/client_telemetry/{client_id}/workouts_enriched",
+    tags=["coach", "client-telemetry"],
+)
+def get_client_workout_history_enriched(
+    client_id: int,
+    pagination: PaginationParams = Depends(PaginationParams),
+    db=Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """Return completed workouts with joined metrics and activity names for a client."""
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    _authorize_coach_for_client(db, acc.coach_id, client_id)
+
+    query = (
+        select(CompletedWorkout)
+        .join(ClientTelemetry, CompletedWorkout.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == client_id)
+        .order_by(CompletedWorkout.id.desc())
+    )
+    workouts = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+
+    result = []
+    for cw in workouts:
+        details = db.get(CompletedWorkoutActivity, cw.completed_workout_details_id) if cw.completed_workout_details_id else None
+        activity_name = None
+        if cw.workout_plan_activity_id:
+            wpa = db.get(WorkoutPlanActivity, cw.workout_plan_activity_id)
+            if wpa:
+                wa = db.get(WorkoutActivity, wpa.workout_activity_id)
+                if wa:
+                    wo = db.get(Workout, wa.workout_id)
+                    if wo:
+                        activity_name = wo.name
+        elif cw.workout_activity_id:
+            wa = db.get(WorkoutActivity, cw.workout_activity_id)
+            if wa:
+                wo = db.get(Workout, wa.workout_id)
+                if wo:
+                    activity_name = wo.name
+        result.append({
+            "id": cw.id,
+            "workout_plan_activity_id": cw.workout_plan_activity_id,
+            "workout_activity_id": cw.workout_activity_id,
+            "activity_name": activity_name,
+            "completed_reps": details.completed_reps if details else None,
+            "completed_sets": details.completed_sets if details else None,
+            "completed_duration": details.completed_duration if details else None,
+            "estimated_calories": details.estimated_calories if details else None,
+            "last_updated": cw.last_updated.isoformat() if cw.last_updated else None,
+        })
+    return result
 
 
 @router.get(

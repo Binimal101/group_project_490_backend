@@ -6,11 +6,16 @@ from sqlmodel import Session, select, SQLModel
 from sqlalchemy.exc import IntegrityError
 
 from src.database.session import get_session
-from src.database.workouts_and_activities.models import WorkoutPlanActivity
+from src.database.workouts_and_activities.models import WorkoutPlan, WorkoutPlanActivity
 from src.database.account.models import Account
 from src.api.dependencies import get_client_account, PaginationParams
 from src.database.client.models import ClientWorkoutPlan
-from src.api.roles.services import remove_busy_for_plan, list_scheduled_plans_for_client_in_range
+from src.api.roles.services import (
+    _fmt_block,
+    notify_coaches_of_client_action,
+    remove_busy_for_plan,
+    list_scheduled_plans_for_client_in_range,
+)
 from src.database.meal.models import ClientPrescribedMeal
 from src.database.telemetry.models import (
     ClientTelemetry, 
@@ -458,9 +463,20 @@ def delete_client_workout_plan(
     if cwp is None or cwp.client_id != acc.client_id:
         raise HTTPException(404, detail="Scheduled plan not found")
 
+    plan = db.get(WorkoutPlan, cwp.workout_plan_id)
+    plan_name = plan.strata_name if plan else "a workout plan"
+
     if cwp.id is not None:
         remove_busy_for_plan(db, cwp.id)
     db.delete(cwp)
+
+    notify_coaches_of_client_action(
+        db,
+        acc.client_id,
+        message=f"{acc.name} cancelled '{plan_name}'",
+        details=f"Was scheduled {_fmt_block(cwp.start_time, cwp.end_time)}",
+    )
+
     db.commit()
     return {"details": "deleted"}
 

@@ -55,6 +55,8 @@ class UpdateAccountInput(BaseModel):
     bio: Optional[str] = None
     pfp_url: Optional[str] = None
     gender: Optional[str] = None
+    daily_steps_goal: Optional[int] = None
+    daily_calorie_budget: Optional[int] = None
 
 #Responses
 class ChatWithAccountResponse(BaseModel):

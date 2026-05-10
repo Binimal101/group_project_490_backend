@@ -53,7 +53,6 @@ def _force_active_relationship(db_session, client_acc, coach_acc):
     rel = ClientCoachRelationship(
         request_id=request.id,
         created_at=datetime.now(timezone.utc),
-        is_active=True,
     )
     db_session.add(rel)
     db_session.commit()
@@ -150,6 +149,7 @@ def test_client_block_terminates_active_relationship(test_client, db_session):
     client_header, client_me = _signup_client(test_client, "clb_client")
     client_acc = db_session.exec(select(Account).where(Account.id == client_me["id"])).first()
     request, rel = _force_active_relationship(db_session, client_acc, coach_acc)
+    rel_id = rel.id
 
     my_coach_before = test_client.get("/roles/client/my_coach", headers=client_header)
     assert my_coach_before.status_code == 200
@@ -158,8 +158,9 @@ def test_client_block_terminates_active_relationship(test_client, db_session):
     assert block.status_code == 200, block.text
     assert block.json()["cancelled_relationships"] >= 1
 
-    db_session.refresh(rel)
-    assert rel.is_active is False
+    # The relationship row must have been deleted — verify via a fresh query
+    db_session.expunge_all()
+    assert db_session.get(ClientCoachRelationship, rel_id) is None
 
     my_coach_after = test_client.get("/roles/client/my_coach", headers=client_header)
     assert my_coach_after.status_code == 200
@@ -188,8 +189,7 @@ def test_coach_can_block_after_relationship_terminates(test_client, db_session):
     client_acc = db_session.exec(select(Account).where(Account.id == client_me["id"])).first()
     _, rel = _force_active_relationship(db_session, client_acc, coach_acc)
 
-    rel.is_active = False
-    db_session.add(rel)
+    db_session.delete(rel)
     db_session.commit()
 
     block = test_client.post(f"/roles/shared/blocks/{client_me['id']}", headers=coach_header)

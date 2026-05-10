@@ -68,6 +68,7 @@ from src.api.roles.client.fitness import (
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan
 from src.api.roles.services import (
+    _fmt_block,
     create_availability_row,
     create_busy_for_plan,
     create_manual_busy_slot,
@@ -75,6 +76,7 @@ from src.api.roles.services import (
     delete_busy_slot_row,
     list_availability_for_account,
     list_busy_slots_for_account,
+    notify_coaches_of_client_action,
     update_availability_row,
     validate_schedulable,
 )
@@ -276,6 +278,15 @@ def assign_workout_plan(payload: AssignWorkoutPlanInput, db = Depends(get_sessio
             raise HTTPException(500, detail="Something went wrong while assigning the workout plan")
         create_busy_for_plan(db, acc.id, cwp.id, b.start_dt, b.end_dt)
         created_ids.append(cwp.id)
+
+    n = len(payload.blocks)
+    first = payload.blocks[0]
+    notify_coaches_of_client_action(
+        db,
+        acc.client_id,
+        message=f"{acc.name} scheduled '{plan.strata_name}'",
+        details=f"{n} session(s) · first block: {_fmt_block(first.start_dt, first.end_dt)}",
+    )
 
     db.commit()
     return AssignWorkoutPlanResponse(client_workout_plan_ids=created_ids)
@@ -869,8 +880,7 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
     if acc is None:
         raise HTTPException(404, detail="Account not found")
 
-    # is_accepted alone is insufficient — termination flips is_active only.
-    # Also exclude relationships where either side has blocked the other.
+    # Active relationship = a ClientCoachRelationship row exists.
     coach_row = db.exec(
         select(ClientCoachRequest, ClientCoachRelationship)
         .join(
@@ -880,7 +890,6 @@ def get_my_coach(db = Depends(get_session), acc: Account = Depends(get_client_ac
         .where(
             ClientCoachRequest.client_id == acc.client_id,
             ClientCoachRequest.is_accepted.is_(True),
-            ClientCoachRelationship.is_active.is_(True),
         )
         .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
     ).first()

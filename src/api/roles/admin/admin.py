@@ -198,7 +198,6 @@ def get_platform_engagement(
     Both come from real tables and don't duplicate any other admin metric."""
     active_pairs = db.exec(
         select(func.count(ClientCoachRelationship.id))
-        .where(ClientCoachRelationship.is_active == True)  # noqa: E712
     ).one()
 
     total_messages = db.exec(select(func.count(ChatMessage.id))).one()

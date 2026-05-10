@@ -27,6 +27,10 @@ class Account(SQLModelLU, table=True):
 
   pfp_url: Optional[str] = None # pull from public supa bucket (private signing is too much rn)
 
+  # personal fitness goals
+  daily_steps_goal: Optional[int] = Field(default=10000)
+  daily_calorie_budget: Optional[int] = Field(default=2000)
+
   # role relations
   client_id: Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL") # all roles are clients by default
   coach_id: Optional[int] = Field(default=None, foreign_key="coach.id", ondelete="SET NULL")

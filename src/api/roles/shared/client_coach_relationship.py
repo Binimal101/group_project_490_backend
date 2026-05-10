@@ -1,15 +1,13 @@
 from fastapi import APIRouter, HTTPException, Depends
+from sqlmodel import select
 from src.api.dependencies import client_coach_request_context, client_coach_relationship_context
 
 from src.database.session import get_session
-from sqlmodel import select
-from datetime import date
-from src.database.payment.models import Subscription, SubscriptionStatus, BillingCycle, PricingPlan
 
 from src.api.roles.coach.domain import DunderResponse
-from src.database.account.models import Notification
+from src.database.account.models import Account, Notification
 from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
-
+from src.api.roles.services import cancel_payments_for_request
 
 from src.api.roles.shared.domain import ClientCoachContext, DeleteRequestResponse
 router = APIRouter(prefix="/roles/shared/client_coach_relationship", tags=["shared", "client_coach_relationship"])
@@ -50,7 +48,7 @@ def delete_coach_request(
     )
 
     db.add(n)
-    
+
     db.delete(request)
     db.commit()
 
@@ -63,16 +61,14 @@ def terminate_relationship(
     db = Depends(get_session),
 ):
     """
-    Ends an active relationship by flipping is_active=False. No rows are
-    deleted; both the request and relationship persist as audit history.
+    Ends an active relationship by deleting the relationship row and cancelling
+    all active subscriptions for the pair. The request row is kept for audit history.
+    Row existence is the source of truth for an active relationship.
     """
 
     relationship = db.get(ClientCoachRelationship, relationship_id)
-
     if relationship is None:
         raise HTTPException(404, detail="Relationship not found")
-    if not relationship.is_active:
-        raise HTTPException(409, detail="Relationship is already inactive")
 
     # notify both parties about termination
     if context["other"].account and context["other"].account.id is not None:
@@ -89,27 +85,41 @@ def terminate_relationship(
             message=f"You ended the contract with {context['other'].account.name}.",
             details="Your coaching relationship has ended. Any active subscriptions have been cancelled.",
         ))
-    
-    relationship.is_active = False
-    db.add(relationship)
 
-    # cancel any subscription tied to this client-coach relationship
     req = db.get(ClientCoachRequest, relationship.request_id)
     if req is not None:
-        plan = db.exec(select(PricingPlan).where(PricingPlan.coach_id == req.coach_id)).first()
-        if plan:
-            sub = db.exec(select(Subscription).where(Subscription.client_id == req.client_id, Subscription.pricing_plan_id == plan.id)).first()
-            if sub:
-                sub.status = SubscriptionStatus.CANCELED
-                sub.canceled_at = date.today()
-                db.add(sub)
-                # deactivate active billing cycles
-                cycles = db.exec(select(BillingCycle).where(BillingCycle.subscription_id == sub.id, BillingCycle.active == True)).all()
-                for c in cycles:
-                    c.active = False
-                    db.add(c)
+        cancel_payments_for_request(db, req)
 
+    # PRD v2: mark the client's prescribed library entries as revoked. We
+    # don't sever the link — the coach can still keep editing their plan and
+    # the client will keep seeing updates (default Q-NEW-1 = a, "live forever").
+    # `revoked_at` is for the UI's "relationship ended" badge and for any
+    # future snapshot/freeze flow we layer on.
+    if req is not None:
+        from datetime import datetime as _dt
+        from src.database.workouts_and_activities.models import (
+            PlanLibraryEntry, PlanLibrarySource,
+        )
+        coach_account = db.exec(
+            select(Account).where(Account.coach_id == req.coach_id)
+        ).first() if hasattr(req, "coach_id") else None
+        client_account = db.exec(
+            select(Account).where(Account.client_id == req.client_id)
+        ).first() if hasattr(req, "client_id") else None
+        if coach_account is not None and client_account is not None:
+            entries = db.exec(
+                select(PlanLibraryEntry)
+                .where(PlanLibraryEntry.account_id == client_account.id)
+                .where(PlanLibraryEntry.source == PlanLibrarySource.PRESCRIBED)
+                .where(PlanLibraryEntry.source_coach_account_id == coach_account.id)
+            ).all()
+            now = _dt.utcnow()
+            for entry in entries:
+                if entry.revoked_at is None:
+                    entry.revoked_at = now
+                    db.add(entry)
+
+    db.delete(relationship)
     db.commit()
 
     return DunderResponse()
-

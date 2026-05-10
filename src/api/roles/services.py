@@ -1,16 +1,115 @@
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlmodel import Session, select
 
-from src.database.account.models import Availability, BusySlot
+from datetime import date
+
+from src.database.account.models import Account, Availability, BusySlot, Notification
 from src.database.client.models import ClientWorkoutPlan
+from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
+from src.database.payment.models import BillingCycle, PricingPlan, Subscription, SubscriptionStatus
 from src.database.workouts_and_activities.models import WorkoutPlan, WorkoutPlanActivity, WorkoutActivity, Workout
 
 
 def _ensure_aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+# ── Notification helpers ──────────────────────────────────────────────────────
+
+def _fmt_block(start: datetime, end: datetime) -> str:
+    """Human-readable block label: 'Mon May 12, 3:00 PM – 5:00 PM'."""
+    aware_start = _ensure_aware(start)
+    aware_end = _ensure_aware(end)
+    day = aware_start.strftime("%a %b %d").replace(" 0", " ")
+    s = aware_start.strftime("%I:%M %p").lstrip("0") or "12:00 AM"
+    e = aware_end.strftime("%I:%M %p").lstrip("0") or "12:00 AM"
+    return f"{day}, {s} – {e}"
+
+
+def get_active_coach_accounts(db: Session, client_id: int) -> List[Account]:
+    """Return Account rows for every coach with an active relationship with client_id.
+    Active = a ClientCoachRelationship row exists (row existence is the source of truth).
+    """
+    rows = db.exec(
+        select(ClientCoachRequest, ClientCoachRelationship)
+        .join(ClientCoachRelationship, ClientCoachRelationship.request_id == ClientCoachRequest.id)
+        .where(
+            ClientCoachRequest.client_id == client_id,
+            ClientCoachRequest.is_accepted == True,  # noqa: E712
+        )
+    ).all()
+    accounts: List[Account] = []
+    for req, _rel in rows:
+        coach_acc = db.exec(select(Account).where(Account.coach_id == req.coach_id)).first()
+        if coach_acc:
+            accounts.append(coach_acc)
+    return accounts
+
+
+def cancel_payments_for_request(db: Session, request: ClientCoachRequest) -> None:
+    """Cancel all active subscriptions (and their billing cycles) for a client-coach pair.
+
+    Joins through PricingPlan so it finds the subscription regardless of which
+    pricing plan the coach is currently advertising.
+    """
+    subscriptions = db.exec(
+        select(Subscription)
+        .join(PricingPlan, Subscription.pricing_plan_id == PricingPlan.id)
+        .where(
+            Subscription.client_id == request.client_id,
+            PricingPlan.coach_id == request.coach_id,
+            Subscription.status == SubscriptionStatus.ACTIVE,
+        )
+    ).all()
+
+    for sub in subscriptions:
+        sub.status = SubscriptionStatus.CANCELED
+        sub.canceled_at = date.today()
+        db.add(sub)
+        for cycle in db.exec(
+            select(BillingCycle).where(
+                BillingCycle.subscription_id == sub.id,
+                BillingCycle.active == True,  # noqa: E712
+            )
+        ).all():
+            cycle.active = False
+            db.add(cycle)
+
+
+def notify_coaches_of_client_action(
+    db: Session,
+    client_id: int,
+    message: str,
+    details: Optional[str] = None,
+    category: str = "workout_plan",
+) -> None:
+    """Send a Notification to every active coach of the given client."""
+    for coach_acc in get_active_coach_accounts(db, client_id):
+        db.add(Notification(
+            account_id=coach_acc.id,
+            fav_category=category,
+            message=message,
+            details=details,
+        ))
+
+
+def notify_client_of_coach_action(
+    db: Session,
+    client_account_id: int,
+    message: str,
+    details: Optional[str] = None,
+    category: str = "workout_plan",
+) -> None:
+    """Send a Notification to a specific client account."""
+    db.add(Notification(
+        account_id=client_account_id,
+        fav_category=category,
+        message=message,
+        details=details,
+    ))
 
 
 def _normalize_datetime(value: datetime) -> datetime:
