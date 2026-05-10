@@ -51,10 +51,14 @@ router = APIRouter(prefix="/api/meals", tags=["meals"])
 
 def _coach_has_active_relationship(db: Session, coach_id: int, client_id: int) -> bool:
     """Stricter than the read-side authorize helper: only returns True for
-    coaches with an *active* (accepted + is_active=True) relationship.
+    coaches with an active (accepted + relationship row exists) relationship.
     Used for write operations like prescribing meals — a coach with only a
     pending request shouldn't be able to push meal plans onto a client who
-    hasn't accepted them yet."""
+    hasn't accepted them yet.
+
+    Note: ClientCoachRelationship doesn't have an is_active flag anymore.
+    The presence of the row itself signals an active pairing — termination
+    deletes the row rather than flipping a flag."""
     accepted = db.exec(
         select(ClientCoachRequest).where(
             ClientCoachRequest.client_id == client_id,
@@ -67,7 +71,6 @@ def _coach_has_active_relationship(db: Session, coach_id: int, client_id: int) -
     rel = db.exec(
         select(ClientCoachRelationship).where(
             ClientCoachRelationship.request_id == accepted.id,
-            ClientCoachRelationship.is_active == True,  # noqa: E712
         )
     ).first()
     return rel is not None

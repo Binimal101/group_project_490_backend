@@ -102,6 +102,10 @@ def main():
             else:
                 res = conn.execute(
                     text(
+                        # is_hidden omitted — relies on the column's
+                        # server-side default of false (set when the schema
+                        # was created from ORM metadata). Seeded workouts
+                        # are visible to coaches and clients out of the box.
                         "INSERT INTO workout (last_updated, name, description, instructions, workout_type) "
                         "VALUES (:last_updated, :name, :description, :instructions, :workout_type) RETURNING id"
                     ),
@@ -177,6 +181,9 @@ def main():
 
                 conn.execute(
                     text(
+                        # is_hidden omitted — relies on the column's
+                        # server-side default of false. Seeded activities
+                        # are visible by default.
                         "INSERT INTO workout_activity (last_updated, workout_id, intensity_measure, intensity_value, estimated_calories_per_unit_frequency) "
                         "VALUES (:last_updated, :wid, :im, :iv, :est)"
                     ),

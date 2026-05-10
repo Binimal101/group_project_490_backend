@@ -31,6 +31,17 @@ class StepCount(SQLModelLU, table=True):
     )
     step_count: int
 
+    @field_validator("step_count")
+    def step_count_in_realistic_range(cls, v):
+        # 70k caps a marathon-runner extreme; anything higher is almost
+        # certainly a sensor glitch or fat-fingered manual entry. 0 keeps
+        # the model symmetric with the rest-day case.
+        if v < 0:
+            raise ValueError("step_count must be non-negative")
+        if v > 70000:
+            raise ValueError("step_count exceeds realistic maximum (70000)")
+        return v
+
 
 class CompletedWorkoutActivity(SQLModelLU, table=True):
     __tablename__ = "completed_workout_activity"  # type: ignore
@@ -80,9 +91,14 @@ class HealthMetrics(SQLModelLU, table=True):
     )
 
     @field_validator("weight")
-    def weight_must_be_positive(cls, v):
+    def weight_in_realistic_range(cls, v):
+        # 600 lbs caps the upper end of the human range with margin; 1 is
+        # the lower bound (0/negative is a sensor glitch). Anything above
+        # 600 is almost certainly a unit-of-measure mix-up.
         if v <= 0:
             raise ValueError("Weight must be a positive integer")
+        if v > 600:
+            raise ValueError("Weight exceeds realistic maximum (600 lbs)")
         return v
 
 class DailyWorkoutSurvey(SQLModelLU, table=True):

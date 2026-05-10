@@ -116,6 +116,8 @@ def log_initial_survey(client_details: InitialSurveyInput, db = Depends(get_sess
 
     client = Client(
         payment_information_id=client_details.payment_information.id,
+        daily_step_goal=client_details.daily_step_goal or 10000,
+        daily_calorie_goal=client_details.daily_calorie_goal or 2000,
     )
 
     db.add(client)
@@ -775,10 +777,17 @@ def query_hirable_coaches(
     return result
 
 
-@router.post("/coach_report/{coach_id}", response_model=CoachReportResponse)
+@router.post(
+    "/coach_report/{coach_id}",
+    response_model=CoachReportResponse,
+    deprecated=True,
+)
 def coach_report(coach_id: int, report_summary: str, db = Depends(get_session), acc: Account = Depends(get_client_account)):
     """
-    Create a new coach report
+    DEPRECATED — use POST /roles/shared/account/report/{account_id} instead,
+    which writes to the unified `account_report` table. This route is kept
+    for any clients still pinned to the old contract; it'll be removed in a
+    later cleanup once all UI surfaces hit the new endpoint.
     """
 
     if acc.id is None:

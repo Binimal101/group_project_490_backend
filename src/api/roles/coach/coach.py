@@ -896,10 +896,18 @@ def deny_client_request(request_id: int, db = Depends(get_session), acc: Account
 
     return DeniedClientResponse(relationship_id=request.id)
 
-@router.post("/client_review/{client_id}", response_model=ClientReportResponse)
+@router.post(
+    "/client_review/{client_id}",
+    response_model=ClientReportResponse,
+    deprecated=True,
+)
 def client_review(client_id: int, report_summary: str, db = Depends(get_session), acc: Account = Depends(get_coach_account)):
     """
-    Creates a review for a specific client
+    DEPRECATED — use POST /roles/shared/account/report/{account_id}.
+    Despite the route name, this always wrote a *report* (not a review)
+    against the legacy client_report table. New report buttons should hit
+    the unified shared/account/report endpoint, which writes to
+    account_report. Kept until the UI is fully repointed.
     """
 
     if acc.id is None:

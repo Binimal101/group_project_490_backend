@@ -8,8 +8,9 @@ from src.api.roles.client.fitness import (
     datetime,
     select,
 )
-from src.database.telemetry.models import ClientTelemetry, CompletedMealActivity, HealthMetrics, StepCount, CompletedSurvey, DailyMoodSurvey, CompletedWorkout
+from src.database.telemetry.models import ClientTelemetry, CompletedMealActivity, HealthMetrics, StepCount, CompletedSurvey, DailyMoodSurvey, CompletedWorkout, CompletedWorkoutActivity
 from src.database.meal.models import Meal, MealFood, MealIngredient, Food, ClientPrescribedMeal
+from src.database.client.models import Client
 from src.api.roles.client.domain import StepCountUpdateInput, StepCountUpdateOutput, WeightUpdateInput
 from src.database.session import get_session
 from src.database.account.models import Account
@@ -347,11 +348,23 @@ def delete_logged_meal(
 
 
 class CaloriesTodayResponse(BaseModel):
+    """Daily calorie summary the dashboard's Calories card reads from.
+    `calories_consumed` comes from logged meals (joined through
+    CompletedMealActivity → Meal → meal_food/food). `calories_burned` comes
+    from logged workouts (CompletedWorkout → CompletedWorkoutActivity →
+    estimated_calories). `net_calories` is just consumed − burned, exposed
+    pre-computed so the UI doesn't need to redo it. `calories_goal` is a
+    placeholder fixed at 2000 for now — when the per-client goal column
+    lands on the Client model, swap that in."""
     calories_consumed: float
+    calories_burned: float
+    net_calories: float
+    calories_goal: float
     protein_g: float
     carbs_g: float
     fat_g: float
     meal_count: int
+    workout_count: int
 
 
 @router.get("/calories_today", response_model=CaloriesTodayResponse)
@@ -359,24 +372,25 @@ def calories_today(
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account),
 ):
-    """Sum today's logged-meal calories+macros for the calories card on the
-    client dashboard. 'Today' is by client_telemetry.date in UTC; matches the
-    same bucketing the survey routes use, so a meal logged at 23:30 UTC
-    counts toward that day's total even if local time has rolled over."""
+    """Sum today's calories in (from meals) + out (from workouts) + macros.
+    'Today' is by client_telemetry.date in UTC; matches the bucketing the
+    survey routes use, so a meal logged at 23:30 UTC counts toward that day
+    even if local time has rolled over."""
     if acc.client_id is None:
         raise HTTPException(status_code=404, detail="Client profile not found")
 
     today_date = datetime.utcnow().date()
-    rows = db.exec(
+
+    # ── Calories consumed (meals) ──────────────────────────────────────
+    meal_rows = db.exec(
         select(CompletedMealActivity, ClientTelemetry)
         .join(ClientTelemetry, CompletedMealActivity.client_telemetry_id == ClientTelemetry.id)
         .where(ClientTelemetry.client_id == acc.client_id)
     ).all()
 
-    total = {"calories": 0.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0}
-    count = 0
-    for activity, telemetry in rows:
-        # Compare bare dates so timezone-aware vs naive doesn't trip us.
+    consumed = {"calories": 0.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0}
+    meal_count = 0
+    for activity, telemetry in meal_rows:
         tel_date = telemetry.date.date() if hasattr(telemetry.date, "date") else telemetry.date
         if tel_date != today_date:
             continue
@@ -384,18 +398,51 @@ def calories_today(
         if not meal:
             continue
         m = _meal_macros(db, meal.id)
-        total["calories"] += m["calories"]
-        total["protein_g"] += m["protein_g"]
-        total["carbs_g"] += m["carbs_g"]
-        total["fat_g"] += m["fat_g"]
-        count += 1
+        consumed["calories"] += m["calories"]
+        consumed["protein_g"] += m["protein_g"]
+        consumed["carbs_g"] += m["carbs_g"]
+        consumed["fat_g"] += m["fat_g"]
+        meal_count += 1
 
+    # ── Calories burned (workouts) ────────────────────────────────────
+    # CompletedWorkout has a nullable FK to CompletedWorkoutActivity which
+    # carries the actual `estimated_calories` integer. Multiple workouts
+    # can share the same telemetry row so we don't dedupe on telemetry —
+    # each completed-workout entry counts toward the burned total.
+    workout_rows = db.exec(
+        select(CompletedWorkout, ClientTelemetry, CompletedWorkoutActivity)
+        .join(ClientTelemetry, CompletedWorkout.client_telemetry_id == ClientTelemetry.id)
+        .join(CompletedWorkoutActivity, CompletedWorkoutActivity.id == CompletedWorkout.completed_workout_details_id, isouter=True)
+        .where(ClientTelemetry.client_id == acc.client_id)
+    ).all()
+
+    burned = 0.0
+    workout_count = 0
+    for completed, telemetry, details in workout_rows:
+        tel_date = telemetry.date.date() if hasattr(telemetry.date, "date") else telemetry.date
+        if tel_date != today_date:
+            continue
+        workout_count += 1
+        if details and details.estimated_calories is not None:
+            burned += float(details.estimated_calories)
+
+    consumed_kcal = round(consumed["calories"], 1)
+    burned_kcal = round(burned, 1)
+    # Pull the client's actual daily target instead of the hardcoded 2000
+    # placeholder. Falls back to 2000 only if the row is somehow missing
+    # (shouldn't happen — get_client_account already enforced client_id).
+    client_row = db.get(Client, acc.client_id)
+    goal = float(client_row.daily_calorie_goal) if client_row else 2000.0
     return CaloriesTodayResponse(
-        calories_consumed=round(total["calories"], 1),
-        protein_g=round(total["protein_g"], 1),
-        carbs_g=round(total["carbs_g"], 1),
-        fat_g=round(total["fat_g"], 1),
-        meal_count=count,
+        calories_consumed=consumed_kcal,
+        calories_burned=burned_kcal,
+        net_calories=round(consumed_kcal - burned_kcal, 1),
+        calories_goal=goal,
+        protein_g=round(consumed["protein_g"], 1),
+        carbs_g=round(consumed["carbs_g"], 1),
+        fat_g=round(consumed["fat_g"], 1),
+        meal_count=meal_count,
+        workout_count=workout_count,
     )
 
 

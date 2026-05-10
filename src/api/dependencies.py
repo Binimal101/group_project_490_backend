@@ -77,9 +77,14 @@ ROLE BASED DEPENDENCIES, USE FOR FEATURES / ENDPOINTS THAT REQUIRE THESE ROLES S
 """
 
 role_authorization_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Your are not authorized to use this resource",
-        headers={"WWW-Authenticate": "Bearer"},
+        # 403 (not 401) — a 401 means "your token is bad, log in again," which
+        # the frontend interprets as a hard auth-failure and clears localStorage.
+        # This case is "your token is fine but you don't have the role required
+        # for this resource" (e.g. a freshly-signed-up user before they finish
+        # the initial-survey that creates their client_id). 403 keeps them
+        # logged in while still rejecting the request.
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You are not authorized to use this resource",
 )
 
 #this will err when the user doesn't fill out initial survey

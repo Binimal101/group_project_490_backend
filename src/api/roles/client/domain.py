@@ -33,9 +33,12 @@ class StepCountUpdateInput(BaseModel):
 
     @field_validator("step_count")
     @classmethod
-    def step_count_must_be_non_negative(cls, v):
-        if 0 > v or v > 100000:
-            raise ValueError("Step count must be a non-negative integer")
+    def step_count_in_realistic_range(cls, v):
+        # Mirror the StepCount model's bound — keep the input rejection at
+        # the same ceiling so client errors fail fast at the API boundary
+        # instead of bubbling up from the ORM layer.
+        if v < 0 or v > 70000:
+            raise ValueError("step_count must be between 0 and 70000")
         return v
     
 class StepCountUpdateOutput(BaseModel):
@@ -58,6 +61,11 @@ class InitialSurveyInput(BaseModel): #creates a client
     gender: Optional[str] = None
     bio: Optional[str] = None
     pfp_url: Optional[str] = None
+    # Daily targets — surface them on onboarding so the dashboard's progress
+    # rings and calories card have real targets from day one. Defaults match
+    # the Client model defaults if the form skips them.
+    daily_step_goal: Optional[int] = 10000
+    daily_calorie_goal: Optional[int] = 2000
     fitness_goals: FitnessGoals
     payment_information: PaymentInformation
     availabilities: List[Availability]
@@ -70,6 +78,24 @@ class InitialSurveyInput(BaseModel): #creates a client
             return value
         if value < 18 or value > 90:
             raise ValueError("Age must be between 18 and 90")
+        return value
+
+    @field_validator("daily_step_goal")
+    @classmethod
+    def validate_step_goal(cls, value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return value
+        if value < 0 or value > 70000:
+            raise ValueError("daily_step_goal must be between 0 and 70000")
+        return value
+
+    @field_validator("daily_calorie_goal")
+    @classmethod
+    def validate_calorie_goal(cls, value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return value
+        if value < 500 or value > 6000:
+            raise ValueError("daily_calorie_goal must be between 500 and 6000")
         return value
 
     @model_validator(mode="after")
