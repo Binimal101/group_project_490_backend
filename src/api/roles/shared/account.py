@@ -700,12 +700,38 @@ def delete_account(
     db: Session = Depends(get_session),
     acc: Account = Depends(get_active_account),
 ):
-    """Permanently delete the current user's account and all associated data."""
+    """Permanently delete the current user's account.
+
+    Every FK referencing account / client / coach / admin is now ON DELETE
+    SET NULL at the DB level (see migration `all_role_fks_to_set_null`), so
+    we no longer need the manual leaf-up cascade `purge_account_data` was
+    doing. Postgres will null out the references atomically as part of the
+    parent delete; orphaned history rows (notifications, reviews, reports,
+    chat_messages, etc) intentionally survive with null FKs.
+
+    The role-row deletes (client/coach) still happen here because those
+    rows are owned 1:1 by the account — when the account goes, so should
+    its role-side companion. Those tables already have CASCADE on their
+    own children so a single `db.delete(client)` is sufficient.
+    """
     account = db.get(Account, acc.id)
     if account is None:
         raise HTTPException(404, detail="Account not found")
 
-    purge_account_data(db, account)
+    # Drop the role-row companions first. Their own children CASCADE.
+    if account.client_id is not None:
+        client = db.get(Client, account.client_id)
+        if client:
+            db.delete(client)
+
+    if account.coach_id is not None:
+        coach = db.get(Coach, account.coach_id)
+        if coach:
+            db.delete(coach)
+
+    # NOTE: deliberately NOT deleting the admin row — multiple accounts can
+    # share an admin_id, so removing it would orphan others.
+
     db.delete(account)
     db.commit()
     return DeleteAccountResponse(success=True, message="Account deleted successfully.")

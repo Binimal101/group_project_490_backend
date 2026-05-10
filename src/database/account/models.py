@@ -38,7 +38,7 @@ class Account(SQLModelLU, table=True):
   # these in IN-clauses to enrich names alongside lists of clients/coaches.
   client_id: Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL", index=True) # all roles are clients by default
   coach_id: Optional[int] = Field(default=None, foreign_key="coach.id", ondelete="SET NULL", index=True)
-  admin_id: Optional[int] = Field(default=None, foreign_key="admin.id", index=True)
+  admin_id: Optional[int] = Field(default=None, foreign_key="admin.id", ondelete="SET NULL", index=True)
 
   created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
@@ -56,7 +56,7 @@ class Availability(SQLModelLU, table=True):
     __tablename__ = "availability"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True, ondelete="CASCADE")
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True, ondelete="SET NULL")
     start_dt: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=False))
     end_dt: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=False))
     repeats_weekly: bool = Field(default=False)
@@ -78,7 +78,7 @@ class BusySlot(SQLModelLU, table=True):
     __tablename__ = "busy_slot"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True, ondelete="CASCADE")
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True, ondelete="SET NULL")
     start_dt: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     end_dt: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     source: str = Field(default="manual")
@@ -98,8 +98,11 @@ class AccountBlock(SQLModelLU, table=True):
     __tablename__ = "account_block"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    blocker_id: int = Field(foreign_key="account.id", index=True, ondelete="CASCADE")
-    blockee_id: int = Field(foreign_key="account.id", index=True, ondelete="CASCADE")
+    # SET NULL (was CASCADE) so a deleted account leaves history rows behind
+    # — block records persist with null FKs instead of vanishing. Matches the
+    # all-FKs-to-SET-NULL migration applied to the live DB.
+    blocker_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True, ondelete="SET NULL")
+    blockee_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True, ondelete="SET NULL")
 
 
 class Notification(SQLModelLU, table=True):
@@ -107,8 +110,10 @@ class Notification(SQLModelLU, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     # The notification list endpoint filters by account_id on every poll —
-    # this is the single hottest read in the app.
-    account_id: int = Field(foreign_key="account.id", ondelete="CASCADE", index=True)
+    # this is the single hottest read in the app. SET NULL (was CASCADE) so
+    # a deleted account doesn't take its inbox with it; the rows linger but
+    # the account_id query simply skips them.
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", ondelete="SET NULL", index=True)
 
     fav_category: Optional[str] = None
 

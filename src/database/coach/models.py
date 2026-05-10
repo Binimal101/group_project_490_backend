@@ -21,7 +21,9 @@ class CoachAvailability(SQLModelLU, table=True):
 class CoachExperience(SQLModelLU, table=True):
   __tablename__ = "coach_experience"  # type: ignore
   id : Optional[int] = Field(default=None, primary_key=True)
-  coach_id : int = Field(foreign_key="coach.id", ondelete="CASCADE")
+  # SET NULL (was CASCADE) — coach can be deleted without erasing the
+  # experience record (the underlying Experience row is shared / immutable).
+  coach_id : Optional[int] = Field(default=None, foreign_key="coach.id", ondelete="SET NULL")
   experience_id : int = Field(foreign_key="experience.id")
 
 class Experience(SQLModelLU, table=True):
@@ -44,7 +46,7 @@ class Experience(SQLModelLU, table=True):
 class CoachCertifications(SQLModelLU, table=True):
   __tablename__ = "coach_certifications"  # type: ignore
   id : Optional[int] = Field(default=None, primary_key=True)
-  coach_id : int = Field(foreign_key="coach.id", ondelete="CASCADE")
+  coach_id : Optional[int] = Field(default=None, foreign_key="coach.id", ondelete="SET NULL")
   certification_id : int = Field(foreign_key="certifications.id")
 
 class Certifications(SQLModelLU, table=True):

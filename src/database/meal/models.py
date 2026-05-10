@@ -69,7 +69,10 @@ class Meal(SQLModelLU, table=True):
     __tablename__ = "meal"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    created_by_account_id: int = Field(foreign_key="account.id", index=True)
+    # SET NULL — when a coach who authored a meal deletes their account, the
+    # meal stays in the catalog (other clients may have it prescribed) but
+    # loses its author attribution.
+    created_by_account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True, ondelete="SET NULL")
     meal_name: str
 
 
@@ -78,8 +81,11 @@ class ClientPrescribedMeal(SQLModelLU, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     meal_id: int = Field(foreign_key="meal.id")
-    client_id: int = Field(foreign_key="client.id", ondelete="CASCADE")
-    prescribed_by_account_id: int = Field(foreign_key="account.id", index=True)
+    # Both FKs SET NULL: a deleted client / coach doesn't take prescription
+    # history with them. The row still resolves through `meal_id` and the
+    # date/kind so historical compliance reports keep working.
+    client_id: Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL")
+    prescribed_by_account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True, ondelete="SET NULL")
     # Weekly plan support: a coach can schedule a meal to a specific date
     # + meal_kind ("breakfast"/"lunch"/"dinner"/"snack"). When NULL, the
     # prescription is a standing recipe the client can log on any day.

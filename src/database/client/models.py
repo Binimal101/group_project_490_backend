@@ -46,7 +46,7 @@ class FitnessGoalEnum(str, Enum):
 class FitnessGoals(SQLModelLU, table=True):
   __tablename__ = "fitness_goals"  # type: ignore
   id : Optional[int] = Field(default=None, primary_key=True)
-  client_id : int = Field(foreign_key="client.id", ondelete="CASCADE")
+  client_id : Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL")
   goal_enum : FitnessGoalEnum
 
   @field_validator("goal_enum")
@@ -56,7 +56,9 @@ class FitnessGoals(SQLModelLU, table=True):
 class ClientWorkoutPlan(SQLModelLU, table=True):
   __tablename__ = "client_workout_plan"  # type: ignore
   id: Optional[int] = Field(default=None, primary_key=True)
-  client_id : int = Field(foreign_key="client.id", ondelete="CASCADE")
+  # SET NULL — keeps the schedule rows after the client is gone so the
+  # workout_plan creator can see who-had-this-on-the-calendar history.
+  client_id : Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL")
   workout_plan_id : int = Field(foreign_key="workout_plan.id")
   start_time : datetime
   end_time : datetime

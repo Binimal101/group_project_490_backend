@@ -9,9 +9,11 @@ class ClientCoachRequest(SQLModelLU, table=True):
   id : Optional[int] = Field(default=None, primary_key=True)
   is_accepted : Optional[bool]
   # Both FKs indexed: every authorization check ("can this coach see this
-  # client?") and every dashboard list filters by one of them.
-  client_id : int = Field(foreign_key="client.id", ondelete="CASCADE", index=True)
-  coach_id : int = Field(foreign_key="coach.id", ondelete="CASCADE", index=True)
+  # client?") and every dashboard list filters by one of them. SET NULL so
+  # historical request rows survive when one side deletes their account —
+  # important because relationship + payment join through this table.
+  client_id : Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL", index=True)
+  coach_id : Optional[int] = Field(default=None, foreign_key="coach.id", ondelete="SET NULL", index=True)
   created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
 class ClientCoachRelationship(SQLModelLU, table=True):
@@ -33,7 +35,9 @@ class ChatMessage(SQLModelLU, table=True):
   __tablename__ = "chat_message"  # type: ignore
   id : Optional[int] = Field(default=None, primary_key=True)
   chat_id : int = Field(foreign_key="chat.id", ondelete="CASCADE")
-  from_account_id : int = Field(foreign_key="account.id", index=True, ondelete="CASCADE")
+  # SET NULL so messages survive after the sender deletes their account —
+  # the conversation history stays readable for the recipient.
+  from_account_id : Optional[int] = Field(default=None, foreign_key="account.id", index=True, ondelete="SET NULL")
   is_read : bool = Field(default=False)
   message_text : str
 
@@ -42,5 +46,5 @@ class AccountChat(SQLModelLU, table=True):
   """Join row attaching an account to a chat. Exactly two rows per chat (enforced in app code)."""
   __tablename__ = "account_chat"  # type: ignore
   id : Optional[int] = Field(default=None, primary_key=True)
-  account_id : int = Field(foreign_key="account.id", index=True, ondelete="CASCADE")
+  account_id : Optional[int] = Field(default=None, foreign_key="account.id", index=True, ondelete="SET NULL")
   chat_id : int = Field(foreign_key="chat.id", index=True, ondelete="CASCADE")
