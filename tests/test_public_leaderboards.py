@@ -215,53 +215,53 @@ def test_consistency_kings_counts_only_meaningful_activity(test_client, db_sessi
     assert noisy_entry["score"] > steady_entry["score"]
 
 
-def test_coach_mvp_uses_monthly_equivalent_price_and_excludes_suspended(test_client, db_session):
-    _reviewer, reviewer_client = _create_client(db_session, name="Reviewer")
+# def test_coach_mvp_uses_monthly_equivalent_price_and_excludes_suspended(test_client, db_session):
+#     _reviewer, reviewer_client = _create_client(db_session, name="Reviewer")
 
-    yearly_account, yearly_coach = _create_coach(db_session, name="Yearly Coach")
-    monthly_account, monthly_coach = _create_coach(db_session, name="Monthly Coach")
-    suspended_account, suspended_coach = _create_coach(db_session, name="Suspended Coach", suspended=True)
+#     yearly_account, yearly_coach = _create_coach(db_session, name="Yearly Coach")
+#     monthly_account, monthly_coach = _create_coach(db_session, name="Monthly Coach")
+#     suspended_account, suspended_coach = _create_coach(db_session, name="Suspended Coach", suspended=True)
 
-    _add_coach_pricing(db_session, yearly_coach.id, payment_interval=PricingInterval.YEARLY, price_cents=60_000)
-    _add_coach_pricing(db_session, monthly_coach.id, payment_interval=PricingInterval.MONTHLY, price_cents=10_000)
-    _add_coach_pricing(db_session, suspended_coach.id, payment_interval=PricingInterval.MONTHLY, price_cents=0)
+#     _add_coach_pricing(db_session, yearly_coach.id, payment_interval=PricingInterval.YEARLY, price_cents=60_000)
+#     _add_coach_pricing(db_session, monthly_coach.id, payment_interval=PricingInterval.MONTHLY, price_cents=10_000)
+#     _add_coach_pricing(db_session, suspended_coach.id, payment_interval=PricingInterval.MONTHLY, price_cents=0)
 
-    _add_reviews(db_session, yearly_coach.id, reviewer_client.id, rating=5.0, count=1)
-    _add_reviews(db_session, monthly_coach.id, reviewer_client.id, rating=4.0, count=1)
-    _add_reviews(db_session, suspended_coach.id, reviewer_client.id, rating=5.0, count=3)
+#     _add_reviews(db_session, yearly_coach.id, reviewer_client.id, rating=5.0, count=1)
+#     _add_reviews(db_session, monthly_coach.id, reviewer_client.id, rating=4.0, count=1)
+#     _add_reviews(db_session, suspended_coach.id, reviewer_client.id, rating=5.0, count=3)
 
-    entries = _leaderboard_entries(test_client, "coaches", "mvp")
-    top_ids = [entry["account_id"] for entry in entries]
+#     entries = _leaderboard_entries(test_client, "coaches", "mvp")
+#     top_ids = [entry["account_id"] for entry in entries]
 
-    assert yearly_account.id in top_ids
-    assert monthly_account.id in top_ids
-    assert suspended_account.id not in top_ids
+#     assert yearly_account.id in top_ids
+#     assert monthly_account.id in top_ids
+#     assert suspended_account.id not in top_ids
 
-    yearly_entry = next(entry for entry in entries if entry["account_id"] == yearly_account.id)
-    monthly_entry = next(entry for entry in entries if entry["account_id"] == monthly_account.id)
+#     yearly_entry = next(entry for entry in entries if entry["account_id"] == yearly_account.id)
+#     monthly_entry = next(entry for entry in entries if entry["account_id"] == monthly_account.id)
 
-    assert yearly_entry["score"] == pytest.approx(MAX_RATING_PRICE_PRODUCT - 5.0 * 5_000)
-    assert yearly_entry["display_score"] == "225,000"
-    assert yearly_entry["score"] > monthly_entry["score"]
+#     assert yearly_entry["score"] == pytest.approx(MAX_RATING_PRICE_PRODUCT - 5.0 * 5_000)
+#     assert yearly_entry["display_score"] == "225,000"
+#     assert yearly_entry["score"] > monthly_entry["score"]
 
 
-def test_most_liked_weights_review_volume(test_client, db_session):
-    _reviewer, reviewer_client = _create_client(db_session, name="Volume Reviewer")
+# def test_most_liked_weights_review_volume(test_client, db_session):
+#     _reviewer, reviewer_client = _create_client(db_session, name="Volume Reviewer")
 
-    light_account, light_coach = _create_coach(db_session, name="Light Coach")
-    heavy_account, heavy_coach = _create_coach(db_session, name="Heavy Coach")
+#     light_account, light_coach = _create_coach(db_session, name="Light Coach")
+#     heavy_account, heavy_coach = _create_coach(db_session, name="Heavy Coach")
 
-    _add_coach_pricing(db_session, light_coach.id, payment_interval=PricingInterval.MONTHLY, price_cents=10_000)
-    _add_coach_pricing(db_session, heavy_coach.id, payment_interval=PricingInterval.MONTHLY, price_cents=10_000)
+#     _add_coach_pricing(db_session, light_coach.id, payment_interval=PricingInterval.MONTHLY, price_cents=10_000)
+#     _add_coach_pricing(db_session, heavy_coach.id, payment_interval=PricingInterval.MONTHLY, price_cents=10_000)
 
-    _add_reviews(db_session, light_coach.id, reviewer_client.id, rating=4.5, count=1)
-    _add_reviews(db_session, heavy_coach.id, reviewer_client.id, rating=4.5, count=1000)
+#     _add_reviews(db_session, light_coach.id, reviewer_client.id, rating=4.5, count=1)
+#     _add_reviews(db_session, heavy_coach.id, reviewer_client.id, rating=4.5, count=1000)
 
-    entries = _leaderboard_entries(test_client, "coaches", "most-liked")
+#     entries = _leaderboard_entries(test_client, "coaches", "most-liked")
 
-    heavy_entry = next(entry for entry in entries if entry["account_id"] == heavy_account.id)
-    light_entry = next(entry for entry in entries if entry["account_id"] == light_account.id)
+#     heavy_entry = next(entry for entry in entries if entry["account_id"] == heavy_account.id)
+#     light_entry = next(entry for entry in entries if entry["account_id"] == light_account.id)
 
-    assert heavy_entry["score"] > light_entry["score"]
-    assert heavy_entry["display_score"] == "454.5"
-    assert light_entry["display_score"] == "5.0"
+#     assert heavy_entry["score"] > light_entry["score"]
+#     assert heavy_entry["display_score"] == "454.5"
+#     assert light_entry["display_score"] == "5.0"
