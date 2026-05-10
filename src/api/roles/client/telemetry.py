@@ -1,3 +1,4 @@
+from datetime import timezone
 from src.api.roles.client.fitness import (
     APIRouter,
     PaginationParams,
@@ -205,21 +206,42 @@ def _meal_macros(db: Session, meal_id: int) -> dict:
 
 @router.get("/query/meals", response_model=List[CompletedMealRow])
 def query_meals(
+    on_date: Optional[str] = None,
     pagination: PaginationParams = Depends(PaginationParams),
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
     """Logged meals for the current client, newest-first, with the resolved
-    meal name and computed macros baked in."""
+    meal name and computed macros baked in. Pass `on_date` (YYYY-MM-DD) to
+    filter to a single day — used by the overlay's "Logged Today" section
+    so it actually matches today, not the most-recent N entries across
+    history."""
     if acc.client_id is None:
         raise HTTPException(status_code=404, detail="Client profile not found")
+
+    parsed_date = None
+    if on_date:
+        try:
+            parsed_date = datetime.strptime(on_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(400, "on_date must be YYYY-MM-DD")
 
     query = (
         select(CompletedMealActivity, ClientTelemetry)
         .join(ClientTelemetry, CompletedMealActivity.client_telemetry_id == ClientTelemetry.id)
         .where(ClientTelemetry.client_id == acc.client_id)
-        .order_by(CompletedMealActivity.id.desc())
     )
+    if parsed_date is not None:
+        # ClientTelemetry.date is tz-aware UTC datetime; compare against the
+        # whole-day window so timezone offsets don't drop entries logged
+        # right around midnight.
+        day_start = datetime.combine(parsed_date, datetime.min.time(), tzinfo=timezone.utc)
+        day_end = datetime.combine(parsed_date, datetime.max.time(), tzinfo=timezone.utc)
+        query = query.where(
+            ClientTelemetry.date >= day_start,
+            ClientTelemetry.date <= day_end,
+        )
+    query = query.order_by(CompletedMealActivity.id.desc())
     rows = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
 
     out: List[CompletedMealRow] = []
