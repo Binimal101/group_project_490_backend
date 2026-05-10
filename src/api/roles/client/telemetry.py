@@ -397,3 +397,48 @@ def calories_today(
         fat_g=round(total["fat_g"], 1),
         meal_count=count,
     )
+
+
+class RandomAppreciationResponse(BaseModel):
+    """One random gratitude entry pulled from the client's mood-survey
+    history. `todays_appreciation` matches the field name the frontend reads
+    from. Returns null fields when the client has nothing logged."""
+    todays_appreciation: Optional[str] = None
+    logged_on: Optional[datetime] = None
+
+
+@router.get("/random_appreciation", response_model=RandomAppreciationResponse)
+def random_appreciation(
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    """Pick a random non-empty `todays_appreciation` the client has ever
+    written in a daily mood survey. The dashboard's AppreciationCard hits
+    this on mount to surface a past gratitude entry as a "something I'm
+    grateful for" reminder."""
+    if acc.client_id is None:
+        raise HTTPException(404, "Client profile not found")
+
+    # Walk the chain: CompletedSurvey ← DailyMoodSurvey ← ClientTelemetry
+    # so we can scope to the current client. Filtering todays_appreciation
+    # to non-empty in SQL avoids loading rows we'd just discard.
+    rows = db.exec(
+        select(CompletedSurvey)
+        .join(DailyMoodSurvey, DailyMoodSurvey.completed_survey_id == CompletedSurvey.id)
+        .join(ClientTelemetry, ClientTelemetry.id == DailyMoodSurvey.client_telemetry_id)
+        .where(
+            ClientTelemetry.client_id == acc.client_id,
+            CompletedSurvey.todays_appreciation.isnot(None),
+            CompletedSurvey.todays_appreciation != "",
+        )
+    ).all()
+
+    if not rows:
+        return RandomAppreciationResponse()
+
+    import random
+    pick = random.choice(rows)
+    return RandomAppreciationResponse(
+        todays_appreciation=pick.todays_appreciation,
+        logged_on=pick.last_updated,
+    )
