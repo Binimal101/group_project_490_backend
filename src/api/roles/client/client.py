@@ -65,6 +65,7 @@ from src.api.roles.client.fitness import (
     create_telemetry_event,
     _get_or_create_daily_telemetry_for_type,
 )
+from src.api.roles.client.telemetry import compute_calories_today as _compute_calories_today
 from src.database.reports.models import CoachReport, CoachReviews
 from src.database.payment.models import PaymentInformation, Invoice, BillingCycle, Subscription, PricingPlan
 from src.api.roles.services import (
@@ -225,6 +226,167 @@ def me(db = Depends(get_session), acc: Account = Depends(get_client_account)):
         last_recorded_weight=weight,
         last_recorded_height=height,
     )
+
+
+@router.get("/dashboard_bundle")
+def client_dashboard_bundle(
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    """One-shot payload for `client_dash.jsx`.
+
+    Replaces nine sequential / parallel calls (me, client/me, calories_today,
+    query/steps, query/workouts, query/weights, my_coach, my_coach_requests,
+    review/<coach>) with a single round trip. Server-side composition lets us
+    reuse the same `acc` row + a single batched Account lookup for the
+    coach side, instead of the frontend chaining `my_coach` → `review/<id>`.
+    """
+    if acc.client_id is None:
+        raise HTTPException(404, detail="Client profile not found")
+
+    today_date = datetime.utcnow().date()
+    client_row = db.get(Client, acc.client_id)
+
+    # ── Latest health metrics (weight + height) ───────────────────────────
+    latest_metrics = db.exec(
+        select(HealthMetrics)
+        .join(ClientTelemetry, HealthMetrics.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == acc.client_id)
+        .order_by(HealthMetrics.id.desc())  # type: ignore
+    ).first()
+    last_weight = getattr(latest_metrics, "weight", None) if latest_metrics else None
+    last_height = getattr(latest_metrics, "height", None) if latest_metrics else None
+
+    # ── Latest step count ─────────────────────────────────────────────────
+    latest_step = db.exec(
+        select(StepCount)
+        .join(ClientTelemetry, StepCount.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == acc.client_id)
+        .order_by(StepCount.id.desc())  # type: ignore
+    ).first()
+
+    # ── Today's completed workouts (count only — full list stays on the
+    #    paginated /query/workouts endpoint for history views) ────────────
+    todays_telemetry_ids = [
+        t.id for t in db.exec(
+            select(ClientTelemetry)
+            .where(ClientTelemetry.client_id == acc.client_id)
+            .where(func.date(ClientTelemetry.date) == today_date)
+        ).all()
+        if t.id is not None
+    ]
+    todays_workout_count = 0
+    if todays_telemetry_ids:
+        todays_workout_count = len(db.exec(
+            select(CompletedWorkout).where(
+                CompletedWorkout.client_telemetry_id.in_(todays_telemetry_ids)  # type: ignore
+            )
+        ).all())
+
+    # ── Active coach + reviews of that coach (single Account batch) ────────
+    coach_payload: Optional[dict] = None
+    coach_reviews: list = []
+    coach_row_pair = db.exec(
+        select(ClientCoachRequest, ClientCoachRelationship)
+        .join(
+            ClientCoachRelationship,
+            ClientCoachRelationship.request_id == ClientCoachRequest.id,
+        )
+        .where(
+            ClientCoachRequest.client_id == acc.client_id,
+            ClientCoachRequest.is_accepted.is_(True),
+        )
+        .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
+    ).first()
+
+    if coach_row_pair is not None:
+        coach_request, relationship = coach_row_pair
+        coach = db.get(Coach, coach_request.coach_id)
+        if coach is not None:
+            coach_account = db.exec(
+                select(Account).where(Account.coach_id == coach.id)
+            ).first()
+            from src.api.roles.shared.blocks import is_blocked_between
+            blocked = (
+                coach_account is not None and coach_account.id is not None and acc.id is not None
+                and is_blocked_between(db, acc.id, coach_account.id)
+            )
+            if not blocked:
+                review_rows = db.exec(
+                    select(CoachReviews).where(CoachReviews.coach_id == coach.id)
+                ).all()
+                avg_rating = (
+                    sum(float(r.rating or 0) for r in review_rows) / len(review_rows)
+                    if review_rows else 0.0
+                )
+                coach_reviews = list(review_rows)
+                coach_payload = {
+                    "coach_id": coach.id,
+                    "id": coach.id,
+                    "verified": coach.verified,
+                    "specialties": coach.specialties,
+                    "coach_availability": coach.coach_availability,
+                    "name": coach_account.name if coach_account else f"Coach #{coach.id}",
+                    "email": coach_account.email if coach_account else None,
+                    "account_id": coach_account.id if coach_account else None,
+                    "specialty": coach.specialties or "Active coach",
+                    "relationship_id": relationship.id,
+                    # Inline rating so the frontend stops chaining a separate
+                    # /review/<coachId> request after my_coach resolves.
+                    "avg_rating": round(avg_rating, 2),
+                    "review_count": len(review_rows),
+                }
+
+    # ── Pending / approved coach requests ─────────────────────────────────
+    coach_request_rows = db.exec(
+        select(ClientCoachRequest)
+        .where(ClientCoachRequest.client_id == acc.client_id)
+        .order_by(ClientCoachRequest.id.desc())  # type: ignore
+    ).all()
+    request_coach_ids = {r.coach_id for r in coach_request_rows}
+    coach_accounts_by_coach_id: dict[int, Account] = {}
+    if request_coach_ids:
+        for a in db.exec(
+            select(Account).where(Account.coach_id.in_(request_coach_ids))  # type: ignore
+        ).all():
+            if a.coach_id is not None:
+                coach_accounts_by_coach_id[a.coach_id] = a
+
+    coach_requests_payload = []
+    for r in coach_request_rows:
+        coach_acc = coach_accounts_by_coach_id.get(r.coach_id)
+        coach_requests_payload.append({
+            "id": r.id,
+            "request_id": r.id,
+            "client_id": r.client_id,
+            "coach_id": r.coach_id,
+            "is_accepted": r.is_accepted,
+            "created_at": r.created_at,
+            "coach_name": coach_acc.name if coach_acc else f"Coach #{r.coach_id}",
+            "coach_pfp_url": coach_acc.pfp_url if coach_acc else None,
+            "coach_account_id": coach_acc.id if coach_acc else None,
+        })
+
+    return {
+        "profile": {
+            "base_account": acc,
+            "client_account": client_row,
+            "last_recorded_weight": last_weight,
+            "last_recorded_height": last_height,
+        },
+        "telemetry_today": {
+            # Mirrors the existing /telemetry/calories_today shape so the
+            # dashboard's calories card can be wired without reshaping data.
+            # Aggregation is delegated to the shared helper to avoid drift.
+            **_compute_calories_today(db, acc.client_id, today_date),
+            "latest_step_count": latest_step.step_count if latest_step else None,
+            "latest_weight": last_weight,
+            "todays_workout_count": todays_workout_count,
+        },
+        "coach": coach_payload,
+        "coach_reviews": coach_reviews,
+        "coach_requests": coach_requests_payload,
+    }
 
 
 @router.get("/coach_availability/{coach_id}", response_model=CoachAvailabilityResponse)

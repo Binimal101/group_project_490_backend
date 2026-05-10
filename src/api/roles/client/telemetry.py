@@ -367,25 +367,17 @@ class CaloriesTodayResponse(BaseModel):
     workout_count: int
 
 
-@router.get("/calories_today", response_model=CaloriesTodayResponse)
-def calories_today(
-    db: Session = Depends(get_session),
-    acc: Account = Depends(get_client_account),
-):
-    """Sum today's calories in (from meals) + out (from workouts) + macros.
-    'Today' is by client_telemetry.date in UTC; matches the bucketing the
-    survey routes use, so a meal logged at 23:30 UTC counts toward that day
-    even if local time has rolled over."""
-    if acc.client_id is None:
-        raise HTTPException(status_code=404, detail="Client profile not found")
+def compute_calories_today(db: Session, client_id: int, today_date) -> dict:
+    """Pure helper: same calculation as `/calories_today`, exposed so the
+    dashboard bundle can inline these numbers without an extra round trip.
 
-    today_date = datetime.utcnow().date()
-
+    Returns the same field set as `CaloriesTodayResponse` (as a plain dict).
+    """
     # ── Calories consumed (meals) ──────────────────────────────────────
     meal_rows = db.exec(
         select(CompletedMealActivity, ClientTelemetry)
         .join(ClientTelemetry, CompletedMealActivity.client_telemetry_id == ClientTelemetry.id)
-        .where(ClientTelemetry.client_id == acc.client_id)
+        .where(ClientTelemetry.client_id == client_id)
     ).all()
 
     consumed = {"calories": 0.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0}
@@ -405,15 +397,11 @@ def calories_today(
         meal_count += 1
 
     # ── Calories burned (workouts) ────────────────────────────────────
-    # CompletedWorkout has a nullable FK to CompletedWorkoutActivity which
-    # carries the actual `estimated_calories` integer. Multiple workouts
-    # can share the same telemetry row so we don't dedupe on telemetry —
-    # each completed-workout entry counts toward the burned total.
     workout_rows = db.exec(
         select(CompletedWorkout, ClientTelemetry, CompletedWorkoutActivity)
         .join(ClientTelemetry, CompletedWorkout.client_telemetry_id == ClientTelemetry.id)
         .join(CompletedWorkoutActivity, CompletedWorkoutActivity.id == CompletedWorkout.completed_workout_details_id, isouter=True)
-        .where(ClientTelemetry.client_id == acc.client_id)
+        .where(ClientTelemetry.client_id == client_id)
     ).all()
 
     burned = 0.0
@@ -428,22 +416,35 @@ def calories_today(
 
     consumed_kcal = round(consumed["calories"], 1)
     burned_kcal = round(burned, 1)
-    # Pull the client's actual daily target instead of the hardcoded 2000
-    # placeholder. Falls back to 2000 only if the row is somehow missing
-    # (shouldn't happen — get_client_account already enforced client_id).
-    client_row = db.get(Client, acc.client_id)
+    client_row = db.get(Client, client_id)
     goal = float(client_row.daily_calorie_goal) if client_row else 2000.0
-    return CaloriesTodayResponse(
-        calories_consumed=consumed_kcal,
-        calories_burned=burned_kcal,
-        net_calories=round(consumed_kcal - burned_kcal, 1),
-        calories_goal=goal,
-        protein_g=round(consumed["protein_g"], 1),
-        carbs_g=round(consumed["carbs_g"], 1),
-        fat_g=round(consumed["fat_g"], 1),
-        meal_count=meal_count,
-        workout_count=workout_count,
-    )
+    return {
+        "calories_consumed": consumed_kcal,
+        "calories_burned": burned_kcal,
+        "net_calories": round(consumed_kcal - burned_kcal, 1),
+        "calories_goal": goal,
+        "protein_g": round(consumed["protein_g"], 1),
+        "carbs_g": round(consumed["carbs_g"], 1),
+        "fat_g": round(consumed["fat_g"], 1),
+        "meal_count": meal_count,
+        "workout_count": workout_count,
+    }
+
+
+@router.get("/calories_today", response_model=CaloriesTodayResponse)
+def calories_today(
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    """Sum today's calories in (from meals) + out (from workouts) + macros.
+    'Today' is by client_telemetry.date in UTC; matches the bucketing the
+    survey routes use, so a meal logged at 23:30 UTC counts toward that day
+    even if local time has rolled over."""
+    if acc.client_id is None:
+        raise HTTPException(status_code=404, detail="Client profile not found")
+
+    today_date = datetime.utcnow().date()
+    return CaloriesTodayResponse(**compute_calories_today(db, acc.client_id, today_date))
 
 
 class RandomAppreciationResponse(BaseModel):

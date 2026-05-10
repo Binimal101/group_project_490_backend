@@ -59,7 +59,7 @@ from src.database.telemetry.models import (
 from src.database.coach.models import Coach, CoachCertifications, CoachExperience, Experience, Certifications
 from src.database.client.models import Client, FitnessGoals, ClientWorkoutPlan
 from src.database.role_management.models import CoachRequest
-from src.database.reports.models import ClientReport
+from src.database.reports.models import ClientReport, CoachReviews
 from src.api.roles.services import (
     _fmt_block,
     create_availability_row,
@@ -233,6 +233,185 @@ def me(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
         last_recorded_weight=weight,
         last_recorded_height=height,
     )
+
+
+@router.get("/dashboard_bundle")
+def coach_dashboard_bundle(
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """One-shot dashboard payload for `coach_dash.jsx`.
+
+    Replaces a 7-call waterfall (`/me`, `/clients`, `/client_requests`,
+    `/earnings`, `/review/<coach>`, plus N × `/lookup_client/<id>` for every
+    pending request) with a single round trip. The frontend stops needing to
+    chase per-row lookups because every client + request row already carries
+    its `base_account` and `fitness_goals` inline.
+
+    The bundle is intentionally a plain dict (no Pydantic response_model) so
+    we can keep the existing per-resource endpoints' shapes byte-stable for
+    callers that still hit them while the dashboard is migrated piecemeal.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+
+    coach_row = db.get(Coach, acc.coach_id)
+
+    # ── 1. accepted clients (relationship-joined Account fields) ──────────
+    client_join_rows = db.exec(
+        select(
+            ClientCoachRequest.id.label("request_id"),  # type: ignore
+            ClientCoachRelationship.id.label("relationship_id"),  # type: ignore
+            ClientCoachRequest.client_id.label("client_id"),
+            Account.id.label("account_id"),
+            Account.name.label("name"),
+            Account.email.label("email"),
+            Account.age.label("age"),
+            Account.gender.label("gender"),
+            Account.pfp_url.label("pfp_url"),
+            Account.bio.label("bio"),
+            Account.is_active.label("is_active"),
+            Account.gcp_user_id.label("gcp_user_id"),
+            Account.created_at.label("created_at"),
+        )
+        .join(ClientCoachRelationship, ClientCoachRelationship.request_id == ClientCoachRequest.id)
+        .join(Account, Account.client_id == ClientCoachRequest.client_id)
+        .where(
+            ClientCoachRequest.coach_id == acc.coach_id,
+            ClientCoachRequest.is_accepted == True,
+        )
+        .order_by(Account.name)
+    ).all()
+
+    # ── 2. pending client requests ────────────────────────────────────────
+    request_rows = db.exec(
+        select(ClientCoachRequest).where(
+            ClientCoachRequest.coach_id == acc.coach_id,
+            ClientCoachRequest.is_accepted.is_(None),
+        )
+    ).all()
+
+    # Single Account / FitnessGoals batch covers BOTH lists. The frontend
+    # used to fire one /lookup_client per pending request; here every detail
+    # is already in memory by the time we render the response.
+    all_client_ids = {r.client_id for r in client_join_rows} | {r.client_id for r in request_rows}
+    accounts_by_client_id: dict[int, Account] = {}
+    goals_by_client_id: dict[int, list[FitnessGoals]] = {}
+    if all_client_ids:
+        for a in db.exec(
+            select(Account).where(Account.client_id.in_(all_client_ids))  # type: ignore
+        ).all():
+            if a.client_id is not None:
+                accounts_by_client_id[a.client_id] = a
+        # Latest goal first so the frontend can pick goals[0] and get the
+        # current focus.
+        for g in db.exec(
+            select(FitnessGoals)
+            .where(FitnessGoals.client_id.in_(all_client_ids))  # type: ignore
+            .order_by(FitnessGoals.id.desc())  # type: ignore
+        ).all():
+            goals_by_client_id.setdefault(g.client_id, []).append(g)
+
+    def _serialize_account(a: Account) -> dict:
+        return {
+            "id": a.id, "name": a.name, "email": a.email,
+            "is_active": a.is_active, "gcp_user_id": a.gcp_user_id,
+            "gender": a.gender, "bio": a.bio, "age": a.age,
+            "pfp_url": a.pfp_url, "client_id": a.client_id,
+            "coach_id": a.coach_id, "admin_id": a.admin_id,
+            "created_at": a.created_at,
+        }
+
+    clients_payload = []
+    for r in client_join_rows:
+        goals = goals_by_client_id.get(r.client_id, [])
+        primary_goal = goals[0] if goals else None
+        # Compose the full base_account from the joined columns so frontend
+        # callers don't need a follow-up /lookup_client.
+        base_account = {
+            "id": r.account_id, "name": r.name, "email": r.email,
+            "is_active": r.is_active, "gcp_user_id": r.gcp_user_id,
+            "gender": r.gender, "bio": r.bio, "age": r.age,
+            "pfp_url": r.pfp_url, "client_id": r.client_id,
+            "coach_id": None, "admin_id": None,
+            "created_at": r.created_at,
+        }
+        clients_payload.append({
+            "relationship_id": r.relationship_id,
+            "client_id": r.client_id,
+            "request_id": r.request_id,
+            "account_id": r.account_id,
+            "name": r.name,
+            "email": r.email,
+            "age": r.age,
+            "gender": r.gender,
+            "pfp_url": r.pfp_url,
+            "goal": getattr(primary_goal, "goal_enum", None) if primary_goal else None,
+            "details": {
+                "base_account": base_account,
+                "fitness_goals": goals,
+            },
+        })
+
+    requests_payload = []
+    for r in request_rows:
+        account = accounts_by_client_id.get(r.client_id)
+        base_account = _serialize_account(account) if account else None
+        requests_payload.append({
+            "client_id": r.client_id,
+            "request_id": r.id,
+            "base_account": base_account,
+            "fitness_goals": goals_by_client_id.get(r.client_id, []),
+        })
+
+    # ── 3. earnings (one aggregate query, same shape as /earnings) ────────
+    earnings_total = db.exec(
+        select(func.sum(Invoice.amount - Invoice.outstanding_balance))
+        .select_from(Invoice)
+        .join(BillingCycle, Invoice.billing_cycle_id == BillingCycle.id)
+        .join(PricingPlan, BillingCycle.pricing_plan_id == PricingPlan.id)
+        .where(PricingPlan.coach_id == acc.coach_id)
+    ).first()
+
+    # ── 4. reviews (avg/count are derivable; we ship both pre-computed and
+    #             the row list so the reviews overlay still has details) ──
+    review_rows = db.exec(
+        select(CoachReviews).where(CoachReviews.coach_id == acc.coach_id)
+    ).all()
+    avg_rating = (
+        sum(float(r.rating or 0) for r in review_rows) / len(review_rows)
+        if review_rows else 0.0
+    )
+
+    # ── 5. stats (no separate endpoint exists; compute server-side so the
+    #             frontend stops re-deriving from raw lists) ───────────────
+    active_clients = sum(
+        1 for c in clients_payload if c.get("relationship_id") is not None
+    )
+    stats = {
+        "total_clients": len(clients_payload),
+        "active_clients": active_clients,
+        "avg_rating": round(avg_rating, 1),
+        "review_count": len(review_rows),
+        "pending_request_count": len(requests_payload),
+    }
+
+    return {
+        "profile": {
+            "base_account": _serialize_account(acc),
+            "coach_account": coach_row,
+        },
+        "stats": stats,
+        "earnings": {
+            "total_earnings": float(earnings_total) if earnings_total is not None else 0.0,
+        },
+        "clients": clients_payload,
+        "client_requests": requests_payload,
+        "reviews": review_rows,
+    }
+
 
 @router.post("/prescribe_plan", response_model=PrescribeWorkoutPlanResponse)
 def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_coach_account)):
