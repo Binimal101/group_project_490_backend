@@ -1199,7 +1199,3 @@ def pay_invoice(invoice_id: int, payload: PayInvoiceInput, db = Depends(get_sess
         remaining_balance=invoice.outstanding_balance,
     )
 
-
-@router.get("/dummy", response_model = DunderResponse)
-def get_dummy(db = Depends(get_session), acc: Account = Depends(get_client_account)):
-    return DunderResponse
