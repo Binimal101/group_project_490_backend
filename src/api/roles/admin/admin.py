@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone, date as date_cls
 from typing import List, Literal, Optional
 
 from src.database.session import get_session
-from src.database.account.models import Account
+from src.database.account.models import Account, Notification
 from src.database.client.models import Client
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.admin.models import Admin
@@ -456,13 +456,13 @@ def resolve_coach_request(
     req.role_promotion_resolution_id = resolution.id
 
     n = Notification(
-        recipient_id=account.id,
-        title="Coach Request Resolved",
-        body=f"Your coach request has been {'approved' if payload.is_approved else 'denied'}.",
-        type="coach_request_resolved"
+        account_id=account.id,
+        fav_category="coach_request_resolved",
+        message=f"Your coach request has been {'approved' if payload.is_approved else 'denied'}.",
+        details="The request was reviewed by an administrator.",
     )
-    
-    db.add(n)   
+
+    db.add(n)
 
     db.add(req)
 

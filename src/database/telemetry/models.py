@@ -111,7 +111,7 @@ class DailyWorkoutSurvey(SQLModelLU, table=True):
     is_seen: bool = False
     is_started: bool = False
     is_finished: bool = False
-    completed_workout_id: Optional[int] = Field(default=None, foreign_key="completed_workout.id")
+    completed_workout_id: Optional[int] = Field(default=None, foreign_key="completed_workout.id", ondelete="CASCADE")
     client_telemetry_id: int = Field(
         foreign_key="client_telemetry.id",
         ondelete="CASCADE",

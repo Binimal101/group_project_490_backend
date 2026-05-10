@@ -1,6 +1,10 @@
 from tests.payload_tools.coach import build_coach_request_payload
+from sqlmodel import select
 
-def test_admin_query_and_resolve_coach_requests(test_client, admin_auth_header, client_auth_header):
+from src.database.account.models import Account, Notification
+from src.database.role_management.models import CoachRequest
+
+def test_admin_query_and_resolve_coach_requests(test_client, admin_auth_header, client_auth_header, db_session):
     # Step 1: Client submits a coach request.
     coach_request_payload = build_coach_request_payload()
 
@@ -36,6 +40,21 @@ def test_admin_query_and_resolve_coach_requests(test_client, admin_auth_header, 
     resolve_data = resolve_resp.json()
     assert resolve_data["message"] == "Coach request resolved successfully"
     assert "resolution_id" in resolve_data
+
+    resolved_request = db_session.get(CoachRequest, coach_request_id)
+    assert resolved_request is not None
+    account = db_session.exec(
+        select(Account).where(Account.coach_id == resolved_request.coach_id)
+    ).first()
+    assert account is not None
+    notification = db_session.exec(
+        select(Notification).where(
+            Notification.account_id == account.id,
+            Notification.fav_category == "coach_request_resolved",
+        )
+    ).first()
+    assert notification is not None
+    assert notification.message == "Your coach request has been approved."
 
     # Step 4: Admin queries again, should not see the resolved request.
     query_resp_2 = test_client.get(
