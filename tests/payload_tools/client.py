@@ -12,7 +12,15 @@ def _next_weekday_dt(weekday_name: str, hour: int, minute: int = 0):
     return today + timedelta(days=delta)
 
 
-def build_client_init_payload(goal="weight loss", weight=170, weekday="monday"):
+def build_client_init_payload(
+    goal="weight loss",
+    weight=170,
+    weekday="monday",
+    age=30,
+    gender="non-binary",
+    bio="Test bio",
+    pfp_url="https://example.com/default-pfp.png",
+):
     """
     Builds a mock payload for completing the initial client survey
     and creating a client role.
@@ -20,6 +28,10 @@ def build_client_init_payload(goal="weight loss", weight=170, weekday="monday"):
     start = _next_weekday_dt(weekday, 8)
     end = start + timedelta(hours=2)
     return {
+        "age": age,
+        "gender": gender,
+        "bio": bio,
+        "pfp_url": pfp_url,
         "fitness_goals": {"goal_enum": goal},
         "payment_information": {
             "ccnum": TEST_ALT_CARD_NUMBER,

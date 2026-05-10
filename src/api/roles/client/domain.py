@@ -54,10 +54,23 @@ class WeightUpdateInput(BaseModel):
     weight: int
 
 class InitialSurveyInput(BaseModel): #creates a client
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    bio: Optional[str] = None
+    pfp_url: Optional[str] = None
     fitness_goals: FitnessGoals
     payment_information: PaymentInformation
     availabilities: List[Availability]
     initial_health_metric: HealthMetrics
+
+    @field_validator("age")
+    @classmethod
+    def validate_age(cls, value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return value
+        if value < 18 or value > 90:
+            raise ValueError("Age must be between 18 and 90")
+        return value
 
     @model_validator(mode="after")
     def validate_nested_models(self):
