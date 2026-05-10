@@ -63,7 +63,9 @@ def serialize_admin_account(account: Account) -> AdminAccountItem:
         email=str(account.email),
         role=admin_account_role(account),
         roles=admin_account_roles(account),
-        status="active" if account.is_active else "deactivated",
+        status=("deactivated"
+                if not account.is_active
+                else ("suspended" if account.is_suspended else "active")),
         is_active=account.is_active,
         is_suspended=account.is_suspended,
         created_at=account.created_at,
@@ -77,17 +79,19 @@ def suspend_account(
     db: Session = Depends(get_session),
     acc: Account = Depends(get_admin_account),
 ):
+    _block_self_action(account_id, acc.id)
+
     target = db.get(Account, account_id)
     if target is None:
         raise HTTPException(404, detail="Account not found")
     target.is_suspended = True
     db.add(target)
-    db.commit()
 
     affected_accounts = get_affected_accounts(db, target)
     notify_affected_accounts(db, target, affected_accounts)
     delete_client_coach_mappings(db, target)
 
+    db.commit()
     db.refresh(target)
     return DeactivateAccountResponse(success=True, message="Account suspended")
 
@@ -98,6 +102,8 @@ def unsuspend_account(
     db: Session = Depends(get_session),
     acc: Account = Depends(get_admin_account),
 ):
+    _block_self_action(account_id, acc.id)
+
     target = db.get(Account, account_id)
     if target is None:
         raise HTTPException(404, detail="Account not found")
