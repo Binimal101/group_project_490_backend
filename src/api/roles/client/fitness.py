@@ -6,11 +6,16 @@ from sqlmodel import Session, select, SQLModel
 from sqlalchemy.exc import IntegrityError
 
 from src.database.session import get_session
-from src.database.workouts_and_activities.models import WorkoutPlanActivity
+from src.database.workouts_and_activities.models import WorkoutPlan, WorkoutPlanActivity
 from src.database.account.models import Account
 from src.api.dependencies import get_client_account, PaginationParams
 from src.database.client.models import ClientWorkoutPlan
-from src.api.roles.services import remove_busy_for_plan
+from src.api.roles.services import (
+    _fmt_block,
+    notify_coaches_of_client_action,
+    remove_busy_for_plan,
+    list_scheduled_plans_for_client_in_range,
+)
 from src.database.meal.models import ClientPrescribedMeal
 from src.database.telemetry.models import (
     ClientTelemetry, 
@@ -122,6 +127,10 @@ class StepsSurveySubmitPayload(SQLModel):
 class MealSurveySubmitPayload(SQLModel):
     client_prescribed_meal_id: Optional[int] = None
     on_demand_meal_id: Optional[int] = None
+    # Optional tag for the slot this meal fills (breakfast/lunch/dinner/snack).
+    # Stored on the resulting CompletedMealActivity row so the client UI can
+    # group logs by kind. NULL = unlabeled (treated as "anytime").
+    meal_kind: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_meal_choice(self):
@@ -209,7 +218,32 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _today_bounds_utc() -> tuple[datetime, datetime]:
+def _today_bounds_utc(
+    local_date: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
+) -> tuple[datetime, datetime]:
+    """Return UTC (start, end) covering the user's current local day.
+
+    When the client supplies `local_date` (YYYY-MM-DD) and `tz_offset_minutes`
+    (JavaScript's `new Date().getTimezoneOffset()` value — positive for UTC-N),
+    we compute the exact UTC window that maps to midnight→midnight in the
+    user's local timezone.  This fixes the late-night bug where UTC has already
+    rolled over to the next day while the client is still on the previous one.
+
+    Falls back to pure-UTC today when parameters are absent or invalid.
+    """
+    if local_date and tz_offset_minutes is not None:
+        try:
+            year, month, day = map(int, local_date.split("-"))
+            # JS getTimezoneOffset() = (UTC − local) in minutes (positive for
+            # west-of-UTC zones).  The Python timedelta offset is the inverse.
+            utc_offset = timedelta(minutes=-tz_offset_minutes)
+            local_tz = timezone(utc_offset)
+            local_midnight = datetime(year, month, day, 0, 0, 0, tzinfo=local_tz)
+            start_utc = local_midnight.astimezone(timezone.utc)
+            return start_utc, start_utc + timedelta(days=1)
+        except (ValueError, OverflowError):
+            pass  # fall through to UTC default
     today = _now_utc().date()
     start = datetime.combine(today, time.min, tzinfo=timezone.utc)
     return start, start + timedelta(days=1)
@@ -240,8 +274,10 @@ def _get_today_telemetry_for_type(
     db: Session,
     client_id: int,
     telemetry_type: str,
+    local_date: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
 ) -> ClientTelemetry | None:
-    start, end = _today_bounds_utc()
+    start, end = _today_bounds_utc(local_date, tz_offset_minutes)
     telemetry = db.exec(
         select(ClientTelemetry).where(
             ClientTelemetry.client_id == client_id,
@@ -258,11 +294,14 @@ def _get_or_create_daily_telemetry_for_type(
     db: Session,
     client_id: int,
     telemetry_type: str,
+    local_date: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
 ) -> ClientTelemetry:
-    telemetry = _get_today_telemetry_for_type(db, client_id, telemetry_type)
+    telemetry = _get_today_telemetry_for_type(
+        db, client_id, telemetry_type, local_date, tz_offset_minutes
+    )
     if telemetry:
         return telemetry
-
     return create_telemetry_event(db, client_id, telemetry_type)
 
 
@@ -275,9 +314,15 @@ def _get_or_create_telemetry(db: Session, client_id: int) -> ClientTelemetry:
     return create_telemetry_event(db, client_id, "general")
 
 
-def _get_or_create_daily_survey(db: Session, client_id: int, survey_model):
+def _get_or_create_daily_survey(
+    db: Session,
+    client_id: int,
+    survey_model,
+    local_date: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
+):
     telemetry_type = SURVEY_TELEMETRY_TYPES[survey_model]
-    start, end = _today_bounds_utc()
+    start, end = _today_bounds_utc(local_date, tz_offset_minutes)
     survey = db.exec(
         select(survey_model)
         .join(ClientTelemetry, survey_model.client_telemetry_id == ClientTelemetry.id)
@@ -343,15 +388,123 @@ def _create_survey_response(survey, telemetry, completed_key: str, response_mode
 def get_or_create_daily_survey(db: Session, client_id: int) -> Tuple[ClientTelemetry, DailyMoodSurvey]:
     return _get_or_create_daily_survey(db, client_id, DailyMoodSurvey)
 
+class LogWorkoutActivityPayload(SQLModel):
+    cwp_id: int
+    workout_plan_activity_id: int
+    local_date: str  # "YYYY-MM-DD" client's local date
+    completed_reps: Optional[int] = None
+    completed_sets: Optional[int] = None
+    completed_duration: Optional[int] = None
+    estimated_calories: Optional[float] = None
+
+    @field_validator("completed_reps", "completed_sets", "completed_duration", "estimated_calories")
+    @classmethod
+    def validate_non_negative(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("Value cannot be negative")
+        return v
+
+
+@router.post("/log_workout_activity")
+def log_workout_activity_endpoint(
+    payload: LogWorkoutActivityPayload,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_client_account),
+):
+    if acc.client_id is None:
+        raise HTTPException(404, detail="Client profile not found")
+
+    cwp = db.get(ClientWorkoutPlan, payload.cwp_id)
+    if cwp is None or cwp.client_id != acc.client_id:
+        raise HTTPException(400, detail="Workout plan not found or not yours")
+
+    try:
+        from datetime import date as date_type
+        requested_date = datetime.strptime(payload.local_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(400, detail="Invalid local_date format, expected YYYY-MM-DD")
+
+    def _ensure_aware_local(dt: datetime) -> datetime:
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+    start_dt = _ensure_aware_local(cwp.start_time)
+    start_date = start_dt.date()
+
+    if not cwp.repeats_weekly:
+        occurs = start_date == requested_date
+    else:
+        if requested_date < start_date:
+            occurs = False
+        else:
+            cutoff_ok = True
+            if cwp.recurrence_end_dt is not None:
+                cutoff_date = _ensure_aware_local(cwp.recurrence_end_dt).date()
+                cutoff_ok = requested_date < cutoff_date
+            occurs = cutoff_ok and ((requested_date - start_date).days % 7 == 0)
+
+    if not occurs:
+        raise HTTPException(400, detail=f"This workout is not scheduled for {payload.local_date}")
+
+    has_metric = any(v is not None for v in [
+        payload.completed_reps, payload.completed_sets,
+        payload.completed_duration, payload.estimated_calories,
+    ])
+    if not has_metric:
+        raise HTTPException(400, detail="Provide at least one of completed_reps, completed_sets, completed_duration, estimated_calories")
+
+    workout_telemetry = create_telemetry_event(db, acc.client_id, TELEMETRY_WORKOUT, commit=False)
+
+    completed_details = CompletedWorkoutActivity(
+        completed_reps=payload.completed_reps,
+        completed_sets=payload.completed_sets,
+        completed_duration=payload.completed_duration,
+        estimated_calories=payload.estimated_calories,
+    )
+    db.add(completed_details)
+    db.flush()
+
+    completed_workout = CompletedWorkout(
+        workout_plan_activity_id=payload.workout_plan_activity_id,
+        completed_workout_details_id=completed_details.id,
+        client_telemetry_id=workout_telemetry.id,
+    )
+    db.add(completed_workout)
+    db.commit()
+    db.refresh(completed_workout)
+
+    return {"id": completed_workout.id, "logged": True}
+
+
 @router.get("/query/plans")
 def query_client_workout_plans(
+    from_dt: Optional[str] = None,
+    to_dt: Optional[str] = None,
     pagination: PaginationParams = Depends(PaginationParams),
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
-    query = select(ClientWorkoutPlan).where(ClientWorkoutPlan.client_id == acc.client_id)
-    plans = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
-    return plans
+    from datetime import timezone
+
+    def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+        # URL query params decode `+` as a space, so an ISO timestamp like
+        # `2026-05-30T10:00:00+00:00` arrives here as `...10:00:00 00:00`.
+        # Swap it back before parsing so the test client (which builds query
+        # strings via .isoformat()) round-trips cleanly without forcing every
+        # caller to manually url-encode.
+        if value is None:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return datetime.fromisoformat(value.replace(" ", "+"))
+
+    parsed_from = _parse_iso(from_dt)
+    parsed_to = _parse_iso(to_dt)
+
+    now = datetime.now(timezone.utc)
+    range_start = parsed_from if parsed_from is not None else now
+    range_end = parsed_to if parsed_to is not None else now + timedelta(weeks=8)
+    return list_scheduled_plans_for_client_in_range(db, acc.client_id, range_start, range_end)
 
 
 @router.delete("/client_workout_plan/{plan_id}")
@@ -367,21 +520,33 @@ def delete_client_workout_plan(
     if cwp is None or cwp.client_id != acc.client_id:
         raise HTTPException(404, detail="Scheduled plan not found")
 
+    plan = db.get(WorkoutPlan, cwp.workout_plan_id)
+    plan_name = plan.strata_name if plan else "a workout plan"
+
     if cwp.id is not None:
         remove_busy_for_plan(db, cwp.id)
     db.delete(cwp)
+
+    notify_coaches_of_client_action(
+        db,
+        acc.client_id,
+        message=f"{acc.name} cancelled '{plan_name}'",
+        details=f"Was scheduled {_fmt_block(cwp.start_time, cwp.end_time)}",
+    )
+
     db.commit()
     return {"details": "deleted"}
 
 @router.get("/daily-survey/today", response_model=DailySurveyResponse)
 def get_today_daily_survey(
+    local_date: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
-    
     if acc.client_id is None:
         raise HTTPException(status_code=404, detail="Client profile not found")
-    
+
     telemetry, survey = get_or_create_daily_survey(db, acc.client_id)
     return DailySurveyResponse(
         survey_id=survey.id,
@@ -394,12 +559,14 @@ def get_today_daily_survey(
 
 @router.post("/daily-survey/start", response_model=DailySurveyResponse)
 def start_daily_survey(
+    local_date: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
     if acc.client_id is None:
         raise HTTPException(status_code=404, detail="Client profile not found")
-    
+
     telemetry, survey = get_or_create_daily_survey(db, acc.client_id)
 
     if not survey.is_started:
@@ -463,25 +630,33 @@ def submit_daily_survey(
 
 @router.get("/daily-survey/workout/today", response_model=DailyWorkoutSurveyResponse)
 def get_today_workout_survey(
+    local_date: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
     if acc.client_id is None:
         raise HTTPException(status_code=404, detail="Client profile not found")
 
-    telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyWorkoutSurvey)
+    telemetry, survey = _get_or_create_daily_survey(
+        db, acc.client_id, DailyWorkoutSurvey, local_date, tz_offset_minutes
+    )
     return _create_survey_response(survey, telemetry, "completed_workout_id", DailyWorkoutSurveyResponse)
 
 
 @router.post("/daily-survey/workout/start", response_model=DailyWorkoutSurveyResponse)
 def start_daily_workout_survey(
+    local_date: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
     if acc.client_id is None:
         raise HTTPException(status_code=404, detail="Client profile not found")
 
-    telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyWorkoutSurvey)
+    telemetry, survey = _get_or_create_daily_survey(
+        db, acc.client_id, DailyWorkoutSurvey, local_date, tz_offset_minutes
+    )
     if not survey.is_started:
         survey.is_started = True
         survey.is_seen = True
@@ -546,32 +721,40 @@ def submit_daily_workout_survey(
 
 @router.get("/daily-survey/body-metrics/today", response_model=DailyBodyMetricsSurveyResponse)
 def get_today_body_metrics_survey(
+    local_date: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
     if acc.client_id is None:
         raise HTTPException(status_code=404, detail="Client profile not found")
 
-    telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyBodyMetricsSurvey)
+    telemetry, survey = _get_or_create_daily_survey(
+        db, acc.client_id, DailyBodyMetricsSurvey, local_date, tz_offset_minutes
+    )
     return _create_survey_response(survey, telemetry, "completed_health_metrics_id", DailyBodyMetricsSurveyResponse)
 
 
 @router.post("/daily-survey/body-metrics/start", response_model=DailyBodyMetricsSurveyResponse)
 def start_daily_body_metrics_survey(
+    local_date: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
     if acc.client_id is None:
         raise HTTPException(status_code=404, detail="Client profile not found")
 
-    telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyBodyMetricsSurvey)
+    telemetry, survey = _get_or_create_daily_survey(
+        db, acc.client_id, DailyBodyMetricsSurvey, local_date, tz_offset_minutes
+    )
 
     if not survey.is_started:
         survey.is_started = True
         survey.is_seen = True
         db.add(survey)
         db.commit()
-        db.refresh(survey)  
+        db.refresh(survey)
 
     return _create_survey_response(survey, telemetry, "completed_health_metrics_id", DailyBodyMetricsSurveyResponse)
 
@@ -640,25 +823,33 @@ def submit_daily_body_metrics_survey(
 
 @router.get("/daily-survey/steps/today", response_model=DailyStepsSurveyResponse)
 def get_today_steps_survey(
+    local_date: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
     if acc.client_id is None:
         raise HTTPException(status_code=404, detail="Client profile not found")
 
-    telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyStepsSurvey)
+    telemetry, survey = _get_or_create_daily_survey(
+        db, acc.client_id, DailyStepsSurvey, local_date, tz_offset_minutes
+    )
     return _create_survey_response(survey, telemetry, "step_count_id", DailyStepsSurveyResponse)
 
 
 @router.post("/daily-survey/steps/start", response_model=DailyStepsSurveyResponse)
 def start_daily_steps_survey(
+    local_date: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
     if acc.client_id is None:
         raise HTTPException(status_code=404, detail="Client profile not found")
 
-    telemetry, survey = _get_or_create_daily_survey(db, acc.client_id, DailyStepsSurvey)
+    telemetry, survey = _get_or_create_daily_survey(
+        db, acc.client_id, DailyStepsSurvey, local_date, tz_offset_minutes
+    )
 
     if not survey.is_started:
         survey.is_started = True
@@ -771,19 +962,17 @@ def submit_daily_meal_survey(
         TELEMETRY_MEAL,
     )
 
-    completed_meal = db.get(CompletedMealActivity, survey.completed_meal_activity_id) if survey.completed_meal_activity_id else None
-    if completed_meal is None:
-        completed_meal = db.exec(
-            select(CompletedMealActivity).where(
-                CompletedMealActivity.client_telemetry_id == meal_telemetry.id
-            )
-        ).first()
-
-    if completed_meal is None:
-        completed_meal = CompletedMealActivity(client_telemetry_id=meal_telemetry.id)
-
-    completed_meal.client_prescribed_meal_id = payload.client_prescribed_meal_id
-    completed_meal.on_demand_meal_id = payload.on_demand_meal_id
+    # Multiple meals per day are now supported (breakfast + lunch + dinner all
+    # share the same telemetry row), so each submit creates a fresh
+    # CompletedMealActivity rather than overwriting today's. The survey's
+    # completed_meal_activity_id still tracks the *latest* log so the daily
+    # check-in counts the day as engaged once any meal is logged.
+    completed_meal = CompletedMealActivity(
+        client_telemetry_id=meal_telemetry.id,
+        client_prescribed_meal_id=payload.client_prescribed_meal_id,
+        on_demand_meal_id=payload.on_demand_meal_id,
+        meal_kind=payload.meal_kind,
+    )
     db.add(completed_meal)
     db.flush()
 

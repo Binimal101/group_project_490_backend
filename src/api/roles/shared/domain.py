@@ -34,6 +34,7 @@ class WorkoutPlanActivityInput(BaseModel):
 
 class CreateWorkoutPlanInput(BaseModel):
     strata_name: str
+    is_public: bool = False
     activities: List[WorkoutPlanActivityInput]
 
 class ClientCoachContext(BaseModel):
@@ -54,6 +55,8 @@ class UpdateAccountInput(BaseModel):
     bio: Optional[str] = None
     pfp_url: Optional[str] = None
     gender: Optional[str] = None
+    daily_steps_goal: Optional[int] = None
+    daily_calorie_budget: Optional[int] = None
 
 #Responses
 class ChatWithAccountResponse(BaseModel):
@@ -219,6 +222,7 @@ class AccountResponse(BaseModel):
     client_id: Optional[int] = None
     coach_id: Optional[int] = None
     admin_id: Optional[int] = None
+    is_suspended: bool = False
     created_at: Optional[datetime] = None
 
 class SendMessageResponse(BaseModel):

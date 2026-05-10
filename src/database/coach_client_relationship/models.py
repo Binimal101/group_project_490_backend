@@ -8,16 +8,22 @@ class ClientCoachRequest(SQLModelLU, table=True):
   __tablename__ = "client_coach_request"  # type: ignore
   id : Optional[int] = Field(default=None, primary_key=True)
   is_accepted : Optional[bool]
-  client_id : int = Field(foreign_key="client.id", ondelete="CASCADE")
-  coach_id : int = Field(foreign_key="coach.id", ondelete="CASCADE")
+  # Both FKs indexed: every authorization check ("can this coach see this
+  # client?") and every dashboard list filters by one of them.
+  client_id : int = Field(foreign_key="client.id", ondelete="CASCADE", index=True)
+  coach_id : int = Field(foreign_key="coach.id", ondelete="CASCADE", index=True)
   created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
 class ClientCoachRelationship(SQLModelLU, table=True):
   __tablename__ = "client_coach_relationship"  # type: ignore
   id : Optional[int] = Field(default=None, primary_key=True)
-  request_id : int = Field(foreign_key="client_coach_request.id", ondelete="CASCADE")
+  request_id : int = Field(foreign_key="client_coach_request.id", ondelete="CASCADE", index=True)
   created_at : datetime
-  is_active : bool
+  # Soft-end flag. We keep the row around (even after termination) so historical
+  # joins — invoices, completed workouts, telemetry — still resolve. Hard
+  # deletes were used previously but they orphaned downstream data and broke
+  # admin reports that needed to render past relationships.
+  is_active : bool = Field(default=True)
 
 class Chat(SQLModelLU, table=True):
   __tablename__ = "chat"  # type: ignore

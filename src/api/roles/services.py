@@ -1,16 +1,115 @@
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlmodel import Session, select
 
-from src.database.account.models import Availability, BusySlot
+from datetime import date
+
+from src.database.account.models import Account, Availability, BusySlot, Notification
 from src.database.client.models import ClientWorkoutPlan
-from src.database.workouts_and_activities.models import WorkoutPlan
+from src.database.coach_client_relationship.models import ClientCoachRequest, ClientCoachRelationship
+from src.database.payment.models import BillingCycle, PricingPlan, Subscription, SubscriptionStatus
+from src.database.workouts_and_activities.models import WorkoutPlan, WorkoutPlanActivity, WorkoutActivity, Workout
 
 
 def _ensure_aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+# ── Notification helpers ──────────────────────────────────────────────────────
+
+def _fmt_block(start: datetime, end: datetime) -> str:
+    """Human-readable block label: 'Mon May 12, 3:00 PM – 5:00 PM'."""
+    aware_start = _ensure_aware(start)
+    aware_end = _ensure_aware(end)
+    day = aware_start.strftime("%a %b %d").replace(" 0", " ")
+    s = aware_start.strftime("%I:%M %p").lstrip("0") or "12:00 AM"
+    e = aware_end.strftime("%I:%M %p").lstrip("0") or "12:00 AM"
+    return f"{day}, {s} – {e}"
+
+
+def get_active_coach_accounts(db: Session, client_id: int) -> List[Account]:
+    """Return Account rows for every coach with an active relationship with client_id.
+    Active = a ClientCoachRelationship row exists (row existence is the source of truth).
+    """
+    rows = db.exec(
+        select(ClientCoachRequest, ClientCoachRelationship)
+        .join(ClientCoachRelationship, ClientCoachRelationship.request_id == ClientCoachRequest.id)
+        .where(
+            ClientCoachRequest.client_id == client_id,
+            ClientCoachRequest.is_accepted == True,  # noqa: E712
+        )
+    ).all()
+    accounts: List[Account] = []
+    for req, _rel in rows:
+        coach_acc = db.exec(select(Account).where(Account.coach_id == req.coach_id)).first()
+        if coach_acc:
+            accounts.append(coach_acc)
+    return accounts
+
+
+def cancel_payments_for_request(db: Session, request: ClientCoachRequest) -> None:
+    """Cancel all active subscriptions (and their billing cycles) for a client-coach pair.
+
+    Joins through PricingPlan so it finds the subscription regardless of which
+    pricing plan the coach is currently advertising.
+    """
+    subscriptions = db.exec(
+        select(Subscription)
+        .join(PricingPlan, Subscription.pricing_plan_id == PricingPlan.id)
+        .where(
+            Subscription.client_id == request.client_id,
+            PricingPlan.coach_id == request.coach_id,
+            Subscription.status == SubscriptionStatus.ACTIVE,
+        )
+    ).all()
+
+    for sub in subscriptions:
+        sub.status = SubscriptionStatus.CANCELED
+        sub.canceled_at = date.today()
+        db.add(sub)
+        for cycle in db.exec(
+            select(BillingCycle).where(
+                BillingCycle.subscription_id == sub.id,
+                BillingCycle.active == True,  # noqa: E712
+            )
+        ).all():
+            cycle.active = False
+            db.add(cycle)
+
+
+def notify_coaches_of_client_action(
+    db: Session,
+    client_id: int,
+    message: str,
+    details: Optional[str] = None,
+    category: str = "workout_plan",
+) -> None:
+    """Send a Notification to every active coach of the given client."""
+    for coach_acc in get_active_coach_accounts(db, client_id):
+        db.add(Notification(
+            account_id=coach_acc.id,
+            fav_category=category,
+            message=message,
+            details=details,
+        ))
+
+
+def notify_client_of_coach_action(
+    db: Session,
+    client_account_id: int,
+    message: str,
+    details: Optional[str] = None,
+    category: str = "workout_plan",
+) -> None:
+    """Send a Notification to a specific client account."""
+    db.add(Notification(
+        account_id=client_account_id,
+        fav_category=category,
+        message=message,
+        details=details,
+    ))
 
 
 def _normalize_datetime(value: datetime) -> datetime:
@@ -112,6 +211,35 @@ def find_busy_conflicts(db: Session, account_id: int, start_dt: datetime, end_dt
             }
         )
 
+    # Project recurring CWPs into the requested window.
+    # create_busy_for_plan only creates a BusySlot for the first occurrence;
+    # future week occurrences must be derived from the CWP itself.
+    for busy_slot in busy_slots:
+        if busy_slot.source != "workout_plan" or busy_slot.source_id is None:
+            continue
+        cwp = db.get(ClientWorkoutPlan, busy_slot.source_id)
+        if cwp is None or not cwp.repeats_weekly:
+            continue
+        workout_plan = db.get(WorkoutPlan, cwp.workout_plan_id)
+        plan_name = workout_plan.strata_name if workout_plan else None
+        bs_start = _normalize_datetime(busy_slot.start_dt)
+        for occ_start, occ_end in _cwp_occurrences_in_range(cwp, start_dt, end_dt):
+            # Skip the occurrence already covered by the BusySlot row
+            if abs((occ_start - bs_start).total_seconds()) < 60:
+                continue
+            conflicts.append(
+                {
+                    "busy_slot_id": None,
+                    "source": "workout_plan",
+                    "source_id": cwp.id,
+                    "source_name": plan_name or "Recurring workout",
+                    "source_workout_plan_id": cwp.id,
+                    "source_workout_plan_name": plan_name,
+                    "start_dt": occ_start.isoformat(),
+                    "end_dt": occ_end.isoformat(),
+                }
+            )
+
     return conflicts
 
 
@@ -147,10 +275,25 @@ def _raise_conflict(detail: str, conflicts: List[Dict[str, Any]]) -> None:
 
 
 def validate_schedulable(db: Session, account_id: int, start_dt: datetime, end_dt: datetime) -> None:
-    if is_range_fully_available(db, account_id, start_dt, end_dt):
-        conflicts = find_busy_conflicts(db, account_id, start_dt, end_dt)
-        if not conflicts:
-            return
+    now = datetime.now(timezone.utc)
+    start_aware = _ensure_aware(start_dt)
+
+    # Reject if the intended slot is in the past.
+    # Same-day is fine (hour discrepancies are acceptable); only reject if the
+    # start date is a previous calendar day AND more than 5 hours in the past.
+    if start_aware < now:
+        hours_ago = (now - start_aware).total_seconds() / 3600
+        if hours_ago > 5:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot schedule a workout plan in the past.",
+            )
+
+    if not is_range_fully_available(db, account_id, start_dt, end_dt):
+        _raise_conflict(
+            "The selected time window is not fully covered by your availability.",
+            [],
+        )
 
     conflicts = find_busy_conflicts(db, account_id, start_dt, end_dt)
     if conflicts:
@@ -158,11 +301,6 @@ def validate_schedulable(db: Session, account_id: int, start_dt: datetime, end_d
             f"You have {len(conflicts)} booked workout(s) in this window. Remove them first.",
             conflicts,
         )
-
-    _raise_conflict(
-        "The selected time window is not fully covered by availability.",
-        [],
-    )
 
 
 def validate_availability_edit_safe(
@@ -266,6 +404,95 @@ def delete_busy_slot_row(db: Session, account_id: int, busy_slot_id: int) -> Non
         raise HTTPException(403, detail="Only manual busy slots can be deleted directly")
     db.delete(busy_slot)
     db.flush()
+
+
+def _cwp_occurrences_in_range(
+    cwp: "ClientWorkoutPlan",
+    range_start: datetime,
+    range_end: datetime,
+) -> List[Tuple[datetime, datetime]]:
+    """Project a ClientWorkoutPlan into concrete (start, end) occurrences within the range."""
+    start_dt = _normalize_datetime(cwp.start_time)
+    end_dt = _normalize_datetime(cwp.end_time)
+    cutoff = _normalize_datetime(cwp.recurrence_end_dt) if cwp.recurrence_end_dt is not None else None
+    projected: List[Tuple[datetime, datetime]] = []
+
+    if not cwp.repeats_weekly:
+        if _overlaps(start_dt, end_dt, range_start, range_end):
+            projected.append((start_dt, end_dt))
+        return projected
+
+    while end_dt <= range_start:
+        start_dt += timedelta(days=7)
+        end_dt += timedelta(days=7)
+
+    while start_dt < range_end:
+        if cutoff is not None and start_dt >= cutoff:
+            break
+        if _overlaps(start_dt, end_dt, range_start, range_end):
+            projected.append((start_dt, end_dt))
+        start_dt += timedelta(days=7)
+        end_dt += timedelta(days=7)
+
+    return projected
+
+
+def _enrich_cwp(db: Session, cwp: ClientWorkoutPlan, occurrences: list) -> Dict[str, Any]:
+    plan = db.get(WorkoutPlan, cwp.workout_plan_id)
+    plan_activities: List[Dict[str, Any]] = []
+    if plan is not None:
+        for pa in db.exec(select(WorkoutPlanActivity).where(WorkoutPlanActivity.workout_plan_id == plan.id)).all():
+            activity = db.get(WorkoutActivity, pa.workout_activity_id)
+            workout = db.get(Workout, activity.workout_id) if activity else None
+            plan_activities.append({
+                "id": pa.id,
+                "workout_activity_id": pa.workout_activity_id,
+                "workout_id": activity.workout_id if activity else None,
+                "workout_name": workout.name if workout else None,
+                "workout_type": workout.workout_type if workout else None,
+                "intensity_measure": activity.intensity_measure if activity else None,
+                "intensity_value": activity.intensity_value if activity else None,
+                "planned_reps": pa.planned_reps,
+                "planned_sets": pa.planned_sets,
+                "planned_duration": pa.planned_duration,
+                "estimated_calories": float(pa.estimated_calories) if pa.estimated_calories is not None else None,
+            })
+    return {
+        "id": cwp.id,
+        "client_id": cwp.client_id,
+        "workout_plan_id": cwp.workout_plan_id,
+        "strata_name": plan.strata_name if plan else None,
+        "is_public": plan.is_public if plan else False,
+        "is_hidden": plan.is_hidden if plan else False,
+        "created_by_account_id": plan.created_by_account_id if plan else None,
+        "start_time": _normalize_datetime(cwp.start_time).isoformat(),
+        "end_time": _normalize_datetime(cwp.end_time).isoformat(),
+        "repeats_weekly": cwp.repeats_weekly,
+        "recurrence_end_dt": _normalize_datetime(cwp.recurrence_end_dt).isoformat() if cwp.recurrence_end_dt else None,
+        "occurrences": [
+            {"start_dt": s.isoformat(), "end_dt": e.isoformat()}
+            for s, e in occurrences
+        ],
+        "activities": plan_activities,
+    }
+
+
+def list_scheduled_plans_for_client_in_range(
+    db: Session,
+    client_id: int,
+    range_start: datetime,
+    range_end: datetime,
+) -> List[Dict[str, Any]]:
+    range_start = _normalize_datetime(range_start)
+    range_end = _normalize_datetime(range_end)
+    cwps = list(db.exec(select(ClientWorkoutPlan).where(ClientWorkoutPlan.client_id == client_id)).all())
+    result: List[Dict[str, Any]] = []
+    for cwp in cwps:
+        occurrences = _cwp_occurrences_in_range(cwp, range_start, range_end)
+        if not occurrences and cwp.repeats_weekly:
+            continue
+        result.append(_enrich_cwp(db, cwp, occurrences))
+    return result
 
 
 def get_account_availability_rows(db: Session, account_id: int) -> List[Availability]:

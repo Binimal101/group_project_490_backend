@@ -17,7 +17,7 @@ from src.database.meal.models import Meal, ClientPrescribedMeal, MealIngredient
 from src.database.workouts_and_activities.models import WorkoutPlanActivity
 from src.database.role_management.models import RolePromotionResolution, CoachRequest
 from src.database.reports.models import CoachReviews
-from src.api.dependencies import get_active_account, get_account_even_if_inactive
+from src.api.dependencies import get_active_account, get_account_even_if_inactive, get_admin_account
 from src.api.storage import upload_public_file_to_supabase
 from src.api.roles.shared.domain import FullProfileResponse, AccountResponse, UpdateAccountInput
 from sqlmodel import Session, select, desc, func, delete, or_
@@ -27,7 +27,6 @@ from src.database.reports.models import CoachReviews
 from src.database.role_management.models import RolePromotionResolution, CoachRequest
 from src.api.dependencies import get_account_from_bearer, get_active_account, get_account_even_if_inactive
 from src.api.storage import upload_public_file_to_supabase
-from src.api.roles.shared.domain import FullProfileResponse, AccountResponse, UpdateAccountInput
 from sqlmodel import Session, select, desc, func
 from sqlalchemy import or_
 from pydantic import BaseModel, EmailStr
@@ -258,7 +257,7 @@ def get_full_profile(
                 select(func.count())
                 .select_from(ClientCoachRelationship)
                 .join(ClientCoachRequest, ClientCoachRelationship.request_id == ClientCoachRequest.id)
-                .where(ClientCoachRequest.coach_id == coach.id, ClientCoachRelationship.is_active == True)
+                .where(ClientCoachRequest.coach_id == coach.id)
             ).one()
 
             # Earnings: sum of paid invoice amounts
@@ -336,6 +335,8 @@ class UpdateAccountInput(BaseModel):
     bio: Optional[str] = None
     pfp_url: Optional[str] = None
     gender: Optional[str] = None
+    daily_steps_goal: Optional[int] = None
+    daily_calorie_budget: Optional[int] = None
 
 
 class AccountResponse(BaseModel):
@@ -350,6 +351,8 @@ class AccountResponse(BaseModel):
     coach_id: Optional[int] = None
     admin_id: Optional[int] = None
     created_at: Optional[datetime] = None
+    daily_steps_goal: Optional[int] = None
+    daily_calorie_budget: Optional[int] = None
 
 
 class DeactivateAccountResponse(BaseModel):
@@ -385,7 +388,6 @@ def get_affected_accounts(db: Session, account: Account) -> list[Account]:
             )
             .where(
                 ClientCoachRequest.client_id == account.client_id,
-                ClientCoachRelationship.is_active == True,
             )
         ).all()
 
@@ -403,7 +405,6 @@ def get_affected_accounts(db: Session, account: Account) -> list[Account]:
             )
             .where(
                 ClientCoachRequest.coach_id == account.coach_id,
-                ClientCoachRelationship.is_active == True,
             )
         ).all()
 
@@ -440,31 +441,8 @@ def notify_affected_accounts(
 
 
 def cancel_payments_for_request(db: Session, request: ClientCoachRequest):
-    subscriptions = db.exec(
-        select(Subscription)
-        .join(PricingPlan, Subscription.pricing_plan_id == PricingPlan.id)
-        .where(
-            Subscription.client_id == request.client_id,
-            PricingPlan.coach_id == request.coach_id,
-            Subscription.status == SubscriptionStatus.ACTIVE,
-        )
-    ).all()
-
-    for subscription in subscriptions:
-        subscription.status = SubscriptionStatus.CANCELED
-        subscription.canceled_at = date.today()
-        db.add(subscription)
-
-        active_cycles = db.exec(
-            select(BillingCycle).where(
-                BillingCycle.subscription_id == subscription.id,
-                BillingCycle.active == True,
-            )
-        ).all()
-
-        for cycle in active_cycles:
-            cycle.active = False
-            db.add(cycle)
+    from src.api.roles.services import cancel_payments_for_request as _cancel
+    _cancel(db, request)
 
 
 def delete_client_coach_mappings(db: Session, account: Account):
@@ -556,7 +534,6 @@ def delete_role_promotion_records(db: Session, account: Account):
 class DeleteAccountResponse(BaseModel):
     success: bool
     message: str
-
 
 @router.post("/deactivate", response_model=DeactivateAccountResponse)
 def deactivate_account(
@@ -760,6 +737,10 @@ def update_account(
         account.pfp_url = payload.pfp_url
     if payload.gender is not None:
         account.gender = payload.gender
+    if payload.daily_steps_goal is not None:
+        account.daily_steps_goal = payload.daily_steps_goal
+    if payload.daily_calorie_budget is not None:
+        account.daily_calorie_budget = payload.daily_calorie_budget
 
     db.add(account)
     db.commit()

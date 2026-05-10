@@ -53,13 +53,15 @@ from src.database.telemetry.models import (
     DailyMealSurvey,
     CompletedMealActivity,
     CompletedWorkout,
+    CompletedWorkoutActivity,
     DailyProgressPicture,
 )
 from src.database.coach.models import Coach, CoachCertifications, CoachExperience, Experience, Certifications
 from src.database.client.models import Client, FitnessGoals, ClientWorkoutPlan
 from src.database.role_management.models import CoachRequest
-from src.database.reports.models import ClientReport
+from src.database.reports.models import ClientReport, CoachReviews
 from src.api.roles.services import (
+    _fmt_block,
     create_availability_row,
     create_busy_for_plan,
     create_manual_busy_slot,
@@ -67,6 +69,8 @@ from src.api.roles.services import (
     delete_busy_slot_row,
     list_availability_for_account,
     list_busy_slots_for_account,
+    list_scheduled_plans_for_client_in_range,
+    notify_client_of_coach_action,
     remove_busy_for_plan,
     update_availability_row,
     validate_schedulable,
@@ -230,6 +234,185 @@ def me(db = Depends(get_session), acc: Account = Depends(get_coach_account)):
         last_recorded_height=height,
     )
 
+
+@router.get("/dashboard_bundle")
+def coach_dashboard_bundle(
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """One-shot dashboard payload for `coach_dash.jsx`.
+
+    Replaces a 7-call waterfall (`/me`, `/clients`, `/client_requests`,
+    `/earnings`, `/review/<coach>`, plus N × `/lookup_client/<id>` for every
+    pending request) with a single round trip. The frontend stops needing to
+    chase per-row lookups because every client + request row already carries
+    its `base_account` and `fitness_goals` inline.
+
+    The bundle is intentionally a plain dict (no Pydantic response_model) so
+    we can keep the existing per-resource endpoints' shapes byte-stable for
+    callers that still hit them while the dashboard is migrated piecemeal.
+    """
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    if acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+
+    coach_row = db.get(Coach, acc.coach_id)
+
+    # ── 1. accepted clients (relationship-joined Account fields) ──────────
+    client_join_rows = db.exec(
+        select(
+            ClientCoachRequest.id.label("request_id"),  # type: ignore
+            ClientCoachRelationship.id.label("relationship_id"),  # type: ignore
+            ClientCoachRequest.client_id.label("client_id"),
+            Account.id.label("account_id"),
+            Account.name.label("name"),
+            Account.email.label("email"),
+            Account.age.label("age"),
+            Account.gender.label("gender"),
+            Account.pfp_url.label("pfp_url"),
+            Account.bio.label("bio"),
+            Account.is_active.label("is_active"),
+            Account.gcp_user_id.label("gcp_user_id"),
+            Account.created_at.label("created_at"),
+        )
+        .join(ClientCoachRelationship, ClientCoachRelationship.request_id == ClientCoachRequest.id)
+        .join(Account, Account.client_id == ClientCoachRequest.client_id)
+        .where(
+            ClientCoachRequest.coach_id == acc.coach_id,
+            ClientCoachRequest.is_accepted == True,
+        )
+        .order_by(Account.name)
+    ).all()
+
+    # ── 2. pending client requests ────────────────────────────────────────
+    request_rows = db.exec(
+        select(ClientCoachRequest).where(
+            ClientCoachRequest.coach_id == acc.coach_id,
+            ClientCoachRequest.is_accepted.is_(None),
+        )
+    ).all()
+
+    # Single Account / FitnessGoals batch covers BOTH lists. The frontend
+    # used to fire one /lookup_client per pending request; here every detail
+    # is already in memory by the time we render the response.
+    all_client_ids = {r.client_id for r in client_join_rows} | {r.client_id for r in request_rows}
+    accounts_by_client_id: dict[int, Account] = {}
+    goals_by_client_id: dict[int, list[FitnessGoals]] = {}
+    if all_client_ids:
+        for a in db.exec(
+            select(Account).where(Account.client_id.in_(all_client_ids))  # type: ignore
+        ).all():
+            if a.client_id is not None:
+                accounts_by_client_id[a.client_id] = a
+        # Latest goal first so the frontend can pick goals[0] and get the
+        # current focus.
+        for g in db.exec(
+            select(FitnessGoals)
+            .where(FitnessGoals.client_id.in_(all_client_ids))  # type: ignore
+            .order_by(FitnessGoals.id.desc())  # type: ignore
+        ).all():
+            goals_by_client_id.setdefault(g.client_id, []).append(g)
+
+    def _serialize_account(a: Account) -> dict:
+        return {
+            "id": a.id, "name": a.name, "email": a.email,
+            "is_active": a.is_active, "gcp_user_id": a.gcp_user_id,
+            "gender": a.gender, "bio": a.bio, "age": a.age,
+            "pfp_url": a.pfp_url, "client_id": a.client_id,
+            "coach_id": a.coach_id, "admin_id": a.admin_id,
+            "created_at": a.created_at,
+        }
+
+    clients_payload = []
+    for r in client_join_rows:
+        goals = goals_by_client_id.get(r.client_id, [])
+        primary_goal = goals[0] if goals else None
+        # Compose the full base_account from the joined columns so frontend
+        # callers don't need a follow-up /lookup_client.
+        base_account = {
+            "id": r.account_id, "name": r.name, "email": r.email,
+            "is_active": r.is_active, "gcp_user_id": r.gcp_user_id,
+            "gender": r.gender, "bio": r.bio, "age": r.age,
+            "pfp_url": r.pfp_url, "client_id": r.client_id,
+            "coach_id": None, "admin_id": None,
+            "created_at": r.created_at,
+        }
+        clients_payload.append({
+            "relationship_id": r.relationship_id,
+            "client_id": r.client_id,
+            "request_id": r.request_id,
+            "account_id": r.account_id,
+            "name": r.name,
+            "email": r.email,
+            "age": r.age,
+            "gender": r.gender,
+            "pfp_url": r.pfp_url,
+            "goal": getattr(primary_goal, "goal_enum", None) if primary_goal else None,
+            "details": {
+                "base_account": base_account,
+                "fitness_goals": goals,
+            },
+        })
+
+    requests_payload = []
+    for r in request_rows:
+        account = accounts_by_client_id.get(r.client_id)
+        base_account = _serialize_account(account) if account else None
+        requests_payload.append({
+            "client_id": r.client_id,
+            "request_id": r.id,
+            "base_account": base_account,
+            "fitness_goals": goals_by_client_id.get(r.client_id, []),
+        })
+
+    # ── 3. earnings (one aggregate query, same shape as /earnings) ────────
+    earnings_total = db.exec(
+        select(func.sum(Invoice.amount - Invoice.outstanding_balance))
+        .select_from(Invoice)
+        .join(BillingCycle, Invoice.billing_cycle_id == BillingCycle.id)
+        .join(PricingPlan, BillingCycle.pricing_plan_id == PricingPlan.id)
+        .where(PricingPlan.coach_id == acc.coach_id)
+    ).first()
+
+    # ── 4. reviews (avg/count are derivable; we ship both pre-computed and
+    #             the row list so the reviews overlay still has details) ──
+    review_rows = db.exec(
+        select(CoachReviews).where(CoachReviews.coach_id == acc.coach_id)
+    ).all()
+    avg_rating = (
+        sum(float(r.rating or 0) for r in review_rows) / len(review_rows)
+        if review_rows else 0.0
+    )
+
+    # ── 5. stats (no separate endpoint exists; compute server-side so the
+    #             frontend stops re-deriving from raw lists) ───────────────
+    active_clients = sum(
+        1 for c in clients_payload if c.get("relationship_id") is not None
+    )
+    stats = {
+        "total_clients": len(clients_payload),
+        "active_clients": active_clients,
+        "avg_rating": round(avg_rating, 1),
+        "review_count": len(review_rows),
+        "pending_request_count": len(requests_payload),
+    }
+
+    return {
+        "profile": {
+            "base_account": _serialize_account(acc),
+            "coach_account": coach_row,
+        },
+        "stats": stats,
+        "earnings": {
+            "total_earnings": float(earnings_total) if earnings_total is not None else 0.0,
+        },
+        "clients": clients_payload,
+        "client_requests": requests_payload,
+        "reviews": review_rows,
+    }
+
+
 @router.post("/prescribe_plan", response_model=PrescribeWorkoutPlanResponse)
 def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_session), acc: Account = Depends(get_coach_account)):
     """
@@ -264,7 +447,6 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
 
     relationship = db.exec(select(ClientCoachRelationship).where(
         ClientCoachRelationship.request_id == request.id,
-        ClientCoachRelationship.is_active == True,
     )).first()
     if relationship is None:
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
@@ -273,30 +455,79 @@ def prescribe_workout_plan(payload: PrescribeWorkoutPlanInput, db = Depends(get_
     if acc.id is not None and is_blocked_between(db, acc.id, client_account.id):
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
 
-    block_pairs = [(b.start_dt, b.end_dt) for b in payload.blocks]
+    # PRD v2: NO ownership transfer. The coach keeps `created_by_account_id`
+    # (so they can edit and re-prescribe). Forks can't be prescribed because
+    # they're, by definition, owned by a client and represent a personal copy.
+    if plan.is_forked:
+        raise HTTPException(
+            status_code=400,
+            detail="Forked plans cannot be prescribed. Build a new plan or prescribe the original.",
+        )
+    # Coach must own the plan they're prescribing.
+    if plan.created_by_account_id != acc.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only prescribe plans you authored.",
+        )
+
+    # Grant the client a library entry of source=prescribed.
+    from src.database.workouts_and_activities.models import (
+        PlanLibraryEntry, PlanLibrarySource,
+    )
+    existing_entry = db.exec(
+        select(PlanLibraryEntry)
+        .where(PlanLibraryEntry.account_id == client_account.id)
+        .where(PlanLibraryEntry.workout_plan_id == plan.id)
+        .where(PlanLibraryEntry.source == PlanLibrarySource.PRESCRIBED)
+    ).first()
+    if existing_entry is None:
+        db.add(PlanLibraryEntry(
+            account_id=client_account.id,
+            workout_plan_id=plan.id,
+            source=PlanLibrarySource.PRESCRIBED,
+            source_coach_account_id=acc.id,
+        ))
+    else:
+        # Re-prescribing after termination: clear revoked_at, refresh attribution.
+        existing_entry.source_coach_account_id = acc.id
+        existing_entry.revoked_at = None
+        db.add(existing_entry)
+
     created_ids = []
-    for start_dt, end_dt in block_pairs:
-        validate_schedulable(db, client_account.id, start_dt, end_dt)
+    for b in payload.blocks:
+        validate_schedulable(db, client_account.id, b.start_dt, b.end_dt)
         cwp = ClientWorkoutPlan(
             client_id=payload.client_id,
             workout_plan_id=payload.workout_plan_id,
-            start_time=start_dt,
-            end_time=end_dt,
+            start_time=b.start_dt,
+            end_time=b.end_dt,
+            repeats_weekly=b.repeats_weekly,
+            recurrence_end_dt=b.recurrence_end_dt,
         )
         db.add(cwp)
         db.flush()
         if cwp.id is None:
             raise HTTPException(500, detail="Something went wrong while prescribing the workout plan")
-        create_busy_for_plan(db, client_account.id, cwp.id, start_dt, end_dt)
+        create_busy_for_plan(db, client_account.id, cwp.id, b.start_dt, b.end_dt)
         created_ids.append(cwp.id)
 
     if client_account.id is not None:
-        db.add(Notification(
-            account_id=client_account.id,
-            fav_category="workout_plan",
-            message=f"{acc.name} prescribed a new workout plan.",
-            details=f"A new workout plan has been scheduled across {len(block_pairs)} session(s). Check your schedule for details.",
-        ))
+        n = len(payload.blocks)
+        first = payload.blocks[0]
+        activity_count = len(
+            db.exec(
+                select(WorkoutPlanActivity).where(WorkoutPlanActivity.workout_plan_id == payload.workout_plan_id)
+            ).all()
+        )
+        notify_client_of_coach_action(
+            db,
+            client_account.id,
+            message=f"{acc.name} scheduled '{plan.strata_name}' for you",
+            details=(
+                f"{n} session(s) · first block: {_fmt_block(first.start_dt, first.end_dt)}"
+                f" · {activity_count} activit{'y' if activity_count == 1 else 'ies'}"
+            ),
+        )
 
     db.commit()
     return PrescribeWorkoutPlanResponse(client_workout_plan_ids=created_ids)
@@ -312,11 +543,33 @@ def _require_active_relationship(db, coach_id: int, client_id: int):
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
     relationship = db.exec(select(ClientCoachRelationship).where(
         ClientCoachRelationship.request_id == request.id,
-        ClientCoachRelationship.is_active == True,
     )).first()
     if relationship is None:
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
     return relationship
+
+
+class CheckSchedulableForClientInput(BaseModel):
+    client_id: int
+    start_dt: datetime
+    end_dt: datetime
+
+
+@router.post("/check_schedulable_for_client")
+def check_schedulable_for_client(
+    payload: CheckSchedulableForClientInput,
+    db = Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """Dry-run availability + busy-slot check for a client. Returns 200 or 409."""
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    _require_active_relationship(db, acc.coach_id, payload.client_id)
+    client_account = db.exec(select(Account).where(Account.client_id == payload.client_id)).first()
+    if client_account is None or client_account.id is None:
+        raise HTTPException(404, detail="Client account not found")
+    validate_schedulable(db, client_account.id, payload.start_dt, payload.end_dt)
+    return {"ok": True}
 
 
 @router.get("/client/{client_id}/availability")
@@ -360,6 +613,8 @@ def coach_view_client_busy_slots(
 @router.get("/client/{client_id}/client_workout_plans")
 def coach_view_client_plans(
     client_id: int,
+    from_dt: Optional[datetime] = None,
+    to_dt: Optional[datetime] = None,
     db = Depends(get_session),
     acc: Account = Depends(get_coach_account),
 ):
@@ -367,10 +622,11 @@ def coach_view_client_plans(
         raise HTTPException(404, detail="No coach profile found for this account")
     _require_active_relationship(db, acc.coach_id, client_id)
 
-    plans = db.exec(
-        select(ClientWorkoutPlan).where(ClientWorkoutPlan.client_id == client_id)
-    ).all()
-    return plans
+    from datetime import timezone
+    now = datetime.now(timezone.utc)
+    range_start = from_dt if from_dt is not None else now
+    range_end = to_dt if to_dt is not None else now + timedelta(weeks=8)
+    return list_scheduled_plans_for_client_in_range(db, client_id, range_start, range_end)
 
 
 @router.delete("/client_workout_plan/{plan_id}")
@@ -392,13 +648,26 @@ def delete_prescribed_plan(plan_id: int, db = Depends(get_session), acc: Account
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
     relationship = db.exec(select(ClientCoachRelationship).where(
         ClientCoachRelationship.request_id == request.id,
-        ClientCoachRelationship.is_active == True,
     )).first()
     if relationship is None:
         raise HTTPException(403, detail="Coach does not have an active relationship with this client")
 
+    plan = db.get(WorkoutPlan, cwp.workout_plan_id)
+    plan_name = plan.strata_name if plan else "a workout plan"
+
+    client_account = db.exec(select(Account).where(Account.client_id == cwp.client_id)).first()
+
     remove_busy_for_plan(db, cwp.id)
     db.delete(cwp)
+
+    if client_account and client_account.id is not None:
+        notify_client_of_coach_action(
+            db,
+            client_account.id,
+            message=f"{acc.name} cancelled '{plan_name}'",
+            details=f"Originally scheduled {_fmt_block(cwp.start_time, cwp.end_time)}",
+        )
+
     db.commit()
     return {"details": "deleted"}
 
@@ -549,10 +818,27 @@ def get_client_requests(db = Depends(get_session), acc: Account = Depends(get_co
         ClientCoachRequest.is_accepted.is_(None)  # pending
     ).all()
 
+    # Batch-fetch every account and every fitness-goal row matching the
+    # request set in two queries instead of 2 × N. This used to be the
+    # dominant cost on the coach dashboard's pending-requests panel.
+    client_ids = [r.client_id for r in requests]
+    accounts_by_client_id: dict[int, Account] = {}
+    goals_by_client_id: dict[int, list[FitnessGoals]] = {}
+    if client_ids:
+        for a in db.exec(
+            select(Account).where(Account.client_id.in_(client_ids))  # type: ignore
+        ).all():
+            if a.client_id is not None:
+                accounts_by_client_id[a.client_id] = a
+        for g in db.exec(
+            select(FitnessGoals).where(FitnessGoals.client_id.in_(client_ids))  # type: ignore
+        ).all():
+            goals_by_client_id.setdefault(g.client_id, []).append(g)
+
     items = []
     for r in requests:
-        account = db.exec(select(Account).where(Account.client_id == r.client_id)).first()
-        fitness_goals = list(db.exec(select(FitnessGoals).where(FitnessGoals.client_id == r.client_id)).all())
+        account = accounts_by_client_id.get(r.client_id)
+        fitness_goals = goals_by_client_id.get(r.client_id, [])
         base_account = None
         if account:
             base_account = {"id": account.id, "name": account.name, "email": account.email, "is_active": account.is_active, "gcp_user_id": account.gcp_user_id, "gender": account.gender, "bio": account.bio, "age": account.age, "pfp_url": account.pfp_url, "client_id": account.client_id, "coach_id": account.coach_id, "admin_id": account.admin_id, "created_at": account.created_at}
@@ -598,7 +884,6 @@ def get_my_accepted_clients(
         .where(
             ClientCoachRequest.coach_id == acc.coach_id,
             ClientCoachRequest.is_accepted == True,
-            ClientCoachRelationship.is_active == True,
         )
     )
     if text:
@@ -607,11 +892,24 @@ def get_my_accepted_clients(
     stmt = stmt.order_by(Account.name).offset(skip).limit(limit)
     rows = db.exec(stmt).all()
 
+    # Batch-load the latest fitness goal per client. Previous implementation
+    # fired one SELECT per row in the loop — at limit=24 that's 24 extra
+    # round-trips on every dashboard render.
+    client_ids = [r.client_id for r in rows]
+    latest_goal_by_client: dict[int, FitnessGoals] = {}
+    if client_ids:
+        # Order by id desc so the first row we see per client_id wins.
+        for g in db.exec(
+            select(FitnessGoals)
+            .where(FitnessGoals.client_id.in_(client_ids))  # type: ignore
+            .order_by(FitnessGoals.id.desc())  # type: ignore
+        ).all():
+            if g.client_id not in latest_goal_by_client:
+                latest_goal_by_client[g.client_id] = g
+
     items = []
     for r in rows:
-        goal_row = db.exec(
-            select(FitnessGoals).where(FitnessGoals.client_id == r.client_id).order_by(FitnessGoals.id.desc())
-        ).first()
+        goal_row = latest_goal_by_client.get(r.client_id)
         items.append({
             "relationship_id": r.relationship_id,
             "client_id": r.client_id,
@@ -660,7 +958,6 @@ def lookup_client(client_id: int, db = Depends(get_session), acc: Account = Depe
         if req_for_rel:
             rel = db.exec(select(ClientCoachRelationship).where(
                 ClientCoachRelationship.request_id == req_for_rel.id,
-                ClientCoachRelationship.is_active == True
             )).first()
             if rel:
                 authorized = True
@@ -732,7 +1029,7 @@ def accept_coach_request(request_id: int, db = Depends(get_session), acc: Accoun
         )
         db.add(n)
 
-    relationship = ClientCoachRelationship(request_id=request.id, created_at=datetime.utcnow(), is_active=True)
+    relationship = ClientCoachRelationship(request_id=request.id, created_at=datetime.utcnow())
     db.add(relationship)
     db.flush()
 
@@ -808,10 +1105,18 @@ def deny_client_request(request_id: int, db = Depends(get_session), acc: Account
 
     return DeniedClientResponse(relationship_id=request.id)
 
-@router.post("/client_review/{client_id}", response_model=ClientReportResponse)
+@router.post(
+    "/client_review/{client_id}",
+    response_model=ClientReportResponse,
+    deprecated=True,
+)
 def client_review(client_id: int, report_summary: str, db = Depends(get_session), acc: Account = Depends(get_coach_account)):
     """
-    Creates a review for a specific client
+    DEPRECATED — use POST /roles/shared/account/report/{account_id}.
+    Despite the route name, this always wrote a *report* (not a review)
+    against the legacy client_report table. New report buttons should hit
+    the unified shared/account/report endpoint, which writes to
+    account_report. Kept until the UI is fully repointed.
     """
 
     if acc.id is None:
@@ -897,7 +1202,6 @@ def get_my_clients(
         .where(
             ClientCoachRequest.coach_id == acc.coach_id,
             ClientCoachRequest.is_accepted.is_(True),
-            ClientCoachRelationship.is_active.is_(True),
         )
         .order_by(ClientCoachRequest.last_updated.desc(), ClientCoachRequest.id.desc())
         .offset(pagination.skip)
@@ -1042,7 +1346,6 @@ def _authorize_coach_for_client(db, coach_id: int, client_id: int) -> None:
         rel = db.exec(
             select(ClientCoachRelationship).where(
                 ClientCoachRelationship.request_id == accepted.id,
-                ClientCoachRelationship.is_active == True,
             )
         ).first()
         if rel:
@@ -1173,6 +1476,61 @@ def get_client_workout_history(
 
 
 @router.get(
+    "/client_telemetry/{client_id}/workouts_enriched",
+    tags=["coach", "client-telemetry"],
+)
+def get_client_workout_history_enriched(
+    client_id: int,
+    pagination: PaginationParams = Depends(PaginationParams),
+    db=Depends(get_session),
+    acc: Account = Depends(get_coach_account),
+):
+    """Return completed workouts with joined metrics and activity names for a client."""
+    if acc.coach_id is None:
+        raise HTTPException(404, detail="No coach profile found for this account")
+    _authorize_coach_for_client(db, acc.coach_id, client_id)
+
+    query = (
+        select(CompletedWorkout)
+        .join(ClientTelemetry, CompletedWorkout.client_telemetry_id == ClientTelemetry.id)
+        .where(ClientTelemetry.client_id == client_id)
+        .order_by(CompletedWorkout.id.desc())
+    )
+    workouts = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+
+    result = []
+    for cw in workouts:
+        details = db.get(CompletedWorkoutActivity, cw.completed_workout_details_id) if cw.completed_workout_details_id else None
+        activity_name = None
+        if cw.workout_plan_activity_id:
+            wpa = db.get(WorkoutPlanActivity, cw.workout_plan_activity_id)
+            if wpa:
+                wa = db.get(WorkoutActivity, wpa.workout_activity_id)
+                if wa:
+                    wo = db.get(Workout, wa.workout_id)
+                    if wo:
+                        activity_name = wo.name
+        elif cw.workout_activity_id:
+            wa = db.get(WorkoutActivity, cw.workout_activity_id)
+            if wa:
+                wo = db.get(Workout, wa.workout_id)
+                if wo:
+                    activity_name = wo.name
+        result.append({
+            "id": cw.id,
+            "workout_plan_activity_id": cw.workout_plan_activity_id,
+            "workout_activity_id": cw.workout_activity_id,
+            "activity_name": activity_name,
+            "completed_reps": details.completed_reps if details else None,
+            "completed_sets": details.completed_sets if details else None,
+            "completed_duration": details.completed_duration if details else None,
+            "estimated_calories": details.estimated_calories if details else None,
+            "last_updated": cw.last_updated.isoformat() if cw.last_updated else None,
+        })
+    return result
+
+
+@router.get(
     "/client_progress_pictures/{client_id}",
     response_model=list[DailyProgressPicture],
     tags=["coach", "client-telemetry"],
@@ -1204,32 +1562,69 @@ def get_client_progress_pictures(
 
 @router.get(
     "/client_meals/{client_id}",
-    response_model=list[CompletedMealActivity],
     tags=["coach", "client-telemetry"],
 )
 def get_client_meal_history(
     client_id: int,
+    on_date: Optional[str] = Query(None, description="Filter to a single date (YYYY-MM-DD); omit for full history"),
     pagination: PaginationParams = Depends(PaginationParams),
     db=Depends(get_session),
     acc: Account = Depends(get_coach_account),
 ):
-    """
-    Return paginated logged-meal history for a specific client.
+    """Return logged-meal history for a specific client, enriched with the
+    resolved meal name + computed calories/macros so the coach UI can render
+    it directly. Pass `on_date` (YYYY-MM-DD) to scope to a single day —
+    used by the client-profile overlay's "what they ate today" section.
+    Coach must currently coach the client (active or pending request)."""
+    # Imported inline to avoid circular imports — coach.py already pulls a
+    # lot from client.* and adding meal helpers at module top would tangle
+    # the import graph further.
+    from src.api.roles.client.telemetry import (
+        _resolve_meal_for_activity,
+        _meal_macros,
+    )
 
-    The coach must hold a pending request or an active relationship with the
-    client. Results are ordered newest first.
-    """
     if acc.coach_id is None:
         raise HTTPException(404, detail="No coach profile found for this account")
     _authorize_coach_for_client(db, acc.coach_id, client_id)
 
     query = (
-        select(CompletedMealActivity)
+        select(CompletedMealActivity, ClientTelemetry)
         .join(ClientTelemetry, CompletedMealActivity.client_telemetry_id == ClientTelemetry.id)
         .where(ClientTelemetry.client_id == client_id)
         .order_by(CompletedMealActivity.id.desc())
     )
-    return db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+    rows = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
+
+    parsed_date = None
+    if on_date:
+        try:
+            parsed_date = datetime.strptime(on_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(400, "on_date must be YYYY-MM-DD")
+
+    out = []
+    for activity, telemetry in rows:
+        if parsed_date is not None:
+            tel_date = telemetry.date.date() if hasattr(telemetry.date, "date") else telemetry.date
+            if tel_date != parsed_date:
+                continue
+        meal = _resolve_meal_for_activity(db, activity)
+        macros = _meal_macros(db, meal.id) if meal else {"calories": 0.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0}
+        out.append({
+            "id": activity.id,
+            "client_prescribed_meal_id": activity.client_prescribed_meal_id,
+            "on_demand_meal_id": activity.on_demand_meal_id,
+            "meal_id": meal.id if meal else None,
+            "meal_name": meal.meal_name if meal else None,
+            "meal_kind": activity.meal_kind,
+            "calories": macros["calories"],
+            "protein_g": macros["protein_g"],
+            "carbs_g": macros["carbs_g"],
+            "fat_g": macros["fat_g"],
+            "logged_at": telemetry.date.isoformat() if telemetry.date else None,
+        })
+    return out
 
 
 @router.get(

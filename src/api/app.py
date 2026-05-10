@@ -29,6 +29,10 @@ from src.api.roles.client.fitness import router as client_fitness_router
 from src.api.roles.client.telemetry import router as client_telemetry_router
 from src.api.roles.coach.fitness import router as coach_fitness_router
 from src.api.roles.admin.admin import router as admin_router
+from src.api.roles.admin.fitness import router as admin_fitness_router
+from src.api.foods.foods import router as foods_router
+from src.api.meals.meals import router as meals_router
+from src.api.public import router as public_router
 
 app = FastAPI(title="Group 6 490 Project API")
 
@@ -53,6 +57,10 @@ app.include_router(client_fitness_router)
 app.include_router(client_telemetry_router)
 app.include_router(coach_fitness_router)
 app.include_router(admin_router)
+app.include_router(admin_fitness_router)  # /roles/admin/fitness/* — exercise bank CRUD
+app.include_router(foods_router)
+app.include_router(meals_router)
+app.include_router(public_router)  # /public/* — unauthenticated landing page data
 
 @app.get("/me")  # get_current_account assumes they pass a valid jwt as bearer
 def read_current_account(user = Depends(get_active_account)):
@@ -144,10 +152,10 @@ def refresh_payments(payload: dict = Body(...), db = Depends(get_session)):
                 overdue_rel = db.exec(
                     select(ClientCoachRelationship).where(
                         ClientCoachRelationship.request_id == overdue_request.id,
-                        ClientCoachRelationship.is_active == True,
                     )
                 ).first()
                 if overdue_rel:
+                    # Soft-end so admin/history views still resolve the join.
                     overdue_rel.is_active = False
                     db.add(overdue_rel)
 

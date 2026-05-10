@@ -65,4 +65,8 @@ def test_admin_can_query_accounts_sorted_by_email_desc(test_client, admin_auth_h
 def test_non_admin_cannot_query_accounts(test_client, auth_header):
     response = test_client.get("/roles/admin/accounts", headers=auth_header)
 
-    assert response.status_code == 401
+    # 403 (was 401) — `role_authorization_exception` was reclassified to
+    # 403 because the JWT is valid; the caller just lacks the admin role.
+    # 401 was wrong: it caused the frontend's apiFetch to clear auth and
+    # bounce the user to /login on every accidental admin-route hit.
+    assert response.status_code == 403

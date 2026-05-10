@@ -1,5 +1,5 @@
 from sqlmodel import select, or_
-from typing import cast
+from typing import cast, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -337,6 +337,111 @@ def get_unread_count(
         )
     ).all())
     return {"total_unread": count}
+
+
+@router.get("/inbox")
+def chat_inbox(
+    active_chat_id: int = 0,
+    active_message_limit: int = 50,
+    db = Depends(get_session),
+    acc: Account = Depends(get_active_account),
+):
+    """One-shot payload for the messages page.
+
+    Returns the conversation list (with partner public summaries, last message
+    and unread count per chat) AND the total unread count, all in one round
+    trip. If `active_chat_id` is provided, the most recent N messages of that
+    chat are inlined too — so opening the messages page no longer needs three
+    separate calls (`/conversations`, `/unread_count`, `/messages/<id>`).
+
+    Pass `active_chat_id=0` (default) to skip inlining messages and use the
+    snapshot purely as an inbox list.
+    """
+    if acc is None or acc.id is None:
+        raise HTTPException(404, detail="Account not found")
+
+    my_chat_ids = [
+        row.chat_id for row in db.exec(
+            select(AccountChat).where(AccountChat.account_id == acc.id)
+        ).all()
+    ]
+    if not my_chat_ids:
+        return {
+            "conversations": [],
+            "total_unread": 0,
+            "active_chat_id": None,
+            "active_messages": [],
+        }
+
+    # Reuse the same shape /conversations returns — copied logic, but bundled.
+    participants = db.exec(
+        select(AccountChat, Account)
+        .join(Account, Account.id == AccountChat.account_id)
+        .where(AccountChat.chat_id.in_(my_chat_ids))
+    ).all()
+    partners_by_chat: dict[int, Account] = {}
+    for ac, account in participants:
+        if account.id == acc.id:
+            continue
+        partners_by_chat[ac.chat_id] = account
+
+    latest_messages = db.exec(
+        select(ChatMessage).where(ChatMessage.chat_id.in_(my_chat_ids))
+    ).all()
+    latest_by_chat: dict[int, ChatMessage] = {}
+    for msg in latest_messages:
+        prev = latest_by_chat.get(msg.chat_id)
+        if prev is None or (msg.id or 0) > (prev.id or 0):
+            latest_by_chat[msg.chat_id] = msg
+
+    unread_rows = db.exec(
+        select(ChatMessage).where(
+            ChatMessage.chat_id.in_(my_chat_ids),
+            ChatMessage.from_account_id != acc.id,
+            ChatMessage.is_read == False,
+        )
+    ).all()
+    unread_by_chat: dict[int, int] = {}
+    for msg in unread_rows:
+        unread_by_chat[msg.chat_id] = unread_by_chat.get(msg.chat_id, 0) + 1
+
+    summaries = []
+    for chat_id, partner in partners_by_chat.items():
+        latest = latest_by_chat.get(chat_id)
+        summaries.append({
+            "chat_id": chat_id,
+            "partner": _public_summary(db, partner),
+            "last_message": latest.message_text if latest else None,
+            "last_message_at": latest.last_updated if latest else None,
+            "unread_count": unread_by_chat.get(chat_id, 0),
+        })
+    summaries.sort(
+        key=lambda s: (s["last_message_at"] or 0).timestamp() if s["last_message_at"] else 0,
+        reverse=True,
+    )
+
+    # Inline the active chat's messages so the page renders immediately.
+    active_messages: list = []
+    resolved_active_chat_id: Optional[int] = None
+    if active_chat_id and active_chat_id in my_chat_ids:
+        resolved_active_chat_id = active_chat_id
+        # Same shape as /messages/<chat_id>: just a list of ChatMessage rows.
+        # We don't run "mark as read" here — that's a separate explicit POST
+        # so the client controls when the unread badge clears.
+        active_messages = db.exec(
+            select(ChatMessage)
+            .where(ChatMessage.chat_id == active_chat_id)
+            .order_by(ChatMessage.id.desc())  # type: ignore
+            .limit(active_message_limit)
+        ).all()
+        active_messages = list(reversed(active_messages))
+
+    return {
+        "conversations": summaries,
+        "total_unread": len(unread_rows),
+        "active_chat_id": resolved_active_chat_id,
+        "active_messages": active_messages,
+    }
 
 
 # Lazy import to avoid sqlalchemy func import at module top.

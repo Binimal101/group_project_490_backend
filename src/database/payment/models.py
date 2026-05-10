@@ -51,13 +51,33 @@ class PricingInterval(str, Enum):
   MONTHLY = "monthly"
   YEARLY = "yearly"
 
+
+# Single source of truth for the monthly-equivalent rate ceiling. The frontend
+# coach-request form caps user input at $500/mo; the leaderboard MVP ranking
+# normalizes against this constant. Bumping the limit here propagates through
+# both the validator below and the public ranking math.
+MAX_MONTHLY_PRICE_CENTS: int = 50_000  # $500.00 / month
+
+
 class PricingPlan(SQLModelLU, table=True):
   __tablename__ = "pricing_plan"  # type: ignore
   id: Optional[int] = Field(default=None, primary_key=True)
-  coach_id: int = Field(foreign_key="coach.id", ondelete="CASCADE")
+  # Coach-listing pages and the cron filter pricing plans by coach_id; index it.
+  coach_id: int = Field(foreign_key="coach.id", ondelete="CASCADE", index=True)
   payment_interval: PricingInterval
   price_cents: int
   open_to_entry: bool = Field(default=True)
+
+  @field_validator("price_cents")
+  def validate_price_cents(cls, value):
+    if value < 0:
+      raise HTTPException(status_code=400, detail="Price in cents must be a non-negative integer")
+    # Yearly plans are stored as the full year amount; the monthly ceiling
+    # below is enforced after dividing by 12 at query time. Here we just
+    # reject obviously-bad inputs.
+    if value > MAX_MONTHLY_PRICE_CENTS * 12:
+      raise HTTPException(status_code=400, detail="Price exceeds platform ceiling")
+    return value
 
 class BillingCycle(SQLModelLU, table=True):
   __tablename__ = "billing_cycle"  # type: ignore
@@ -65,14 +85,17 @@ class BillingCycle(SQLModelLU, table=True):
   active : bool
   entry_date : date
   end_date : date
-  subscription_id : int = Field(foreign_key="subscription.id", ondelete="CASCADE")
-  pricing_plan_id : int = Field(foreign_key="pricing_plan.id", ondelete="CASCADE")
+  # refresh_payments scans cycles by subscription_id every cron run.
+  subscription_id : int = Field(foreign_key="subscription.id", ondelete="CASCADE", index=True)
+  pricing_plan_id : int = Field(foreign_key="pricing_plan.id", ondelete="CASCADE", index=True)
 
 class Invoice(SQLModelLU, table=True):
   __tablename__ = "invoice"  # type: ignore
   id : Optional[int] = Field(default=None, primary_key=True)
-  billing_cycle_id : Optional[int] = Field(default=None, foreign_key="billing_cycle.id", ondelete="CASCADE")
-  client_id : Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL")
+  # Both billing-cycle scans (cron settle) and client invoice listings filter
+  # invoices by these — neither was indexed before.
+  billing_cycle_id : Optional[int] = Field(default=None, foreign_key="billing_cycle.id", ondelete="CASCADE", index=True)
+  client_id : Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL", index=True)
   amount : float
   outstanding_balance : float
 
@@ -85,8 +108,10 @@ class SubscriptionStatus(str, Enum):
 class Subscription(SQLModelLU, table=True):
   __tablename__ = "subscription"  # type: ignore
   id: Optional[int] = Field(default=None, primary_key=True)
-  client_id: int = Field(foreign_key="client.id", ondelete="CASCADE")
-  pricing_plan_id: Optional[int] = Field(default=None, foreign_key="pricing_plan.id", ondelete="SET NULL")
+  # The cron job filters active subs by client_id; the client invoice page
+  # joins through here too.
+  client_id: int = Field(foreign_key="client.id", ondelete="CASCADE", index=True)
+  pricing_plan_id: Optional[int] = Field(default=None, foreign_key="pricing_plan.id", ondelete="SET NULL", index=True)
 
   status: SubscriptionStatus = Field(default=SubscriptionStatus.ACTIVE)
   start_date: date = Field(default_factory=date.today)  

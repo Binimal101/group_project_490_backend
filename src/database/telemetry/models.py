@@ -12,7 +12,10 @@ class ClientTelemetry(SQLModelLU, table=True):
     __tablename__ = "client_telemetry"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    client_id: int = Field(foreign_key="client.id", ondelete="CASCADE")
+    # Both client dashboards and coach dashboards filter telemetry by client_id
+    # constantly (calories today, weekly graphs, etc) — this column is the most
+    # frequent WHERE-target after primary keys.
+    client_id: int = Field(foreign_key="client.id", ondelete="CASCADE", index=True)
     telemetry_type: Optional[str] = Field(default=None, index=True)
     date: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
@@ -30,6 +33,17 @@ class StepCount(SQLModelLU, table=True):
         sa_column_kwargs={"unique": True},
     )
     step_count: int
+
+    @field_validator("step_count")
+    def step_count_in_realistic_range(cls, v):
+        # 70k caps a marathon-runner extreme; anything higher is almost
+        # certainly a sensor glitch or fat-fingered manual entry. 0 keeps
+        # the model symmetric with the rest-day case.
+        if v < 0:
+            raise ValueError("step_count must be non-negative")
+        if v > 70000:
+            raise ValueError("step_count exceeds realistic maximum (70000)")
+        return v
 
 
 class CompletedWorkoutActivity(SQLModelLU, table=True):
@@ -80,9 +94,14 @@ class HealthMetrics(SQLModelLU, table=True):
     )
 
     @field_validator("weight")
-    def weight_must_be_positive(cls, v):
+    def weight_in_realistic_range(cls, v):
+        # 600 lbs caps the upper end of the human range with margin; 1 is
+        # the lower bound (0/negative is a sensor glitch). Anything above
+        # 600 is almost certainly a unit-of-measure mix-up.
         if v <= 0:
             raise ValueError("Weight must be a positive integer")
+        if v > 600:
+            raise ValueError("Weight exceeds realistic maximum (600 lbs)")
         return v
 
 class DailyWorkoutSurvey(SQLModelLU, table=True):
@@ -92,7 +111,7 @@ class DailyWorkoutSurvey(SQLModelLU, table=True):
     is_seen: bool = False
     is_started: bool = False
     is_finished: bool = False
-    completed_workout_id: Optional[int] = Field(default=None, foreign_key="completed_workout.id")
+    completed_workout_id: Optional[int] = Field(default=None, foreign_key="completed_workout.id", ondelete="CASCADE")
     client_telemetry_id: int = Field(
         foreign_key="client_telemetry.id",
         ondelete="CASCADE",
@@ -151,23 +170,34 @@ class CompletedMealActivity(SQLModelLU, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     client_prescribed_meal_id: Optional[int] = Field(default=None, foreign_key="client_prescribed_meal.id", ondelete="CASCADE")
     on_demand_meal_id: Optional[int] = Field(default=None, foreign_key="meal.id")
+    # Multiple meals per day are allowed (breakfast + lunch + dinner all share
+    # the same client_telemetry row), so client_telemetry_id is NOT unique.
+    # Indexed because the meals-today endpoint joins through this on every
+    # client dashboard load.
     client_telemetry_id: int = Field(
         foreign_key="client_telemetry.id",
         ondelete="CASCADE",
-        sa_column_kwargs={"unique": True},
+        index=True,
     )
+    # Tag each log with its kind ("breakfast"/"lunch"/"dinner"/"snack") so the
+    # client dashboard can group meals and the coach can review the plan
+    # adherence per slot.
+    meal_kind: Optional[str] = Field(default=None)
 
 
 class CompletedWorkout(SQLModelLU, table=True):
     __tablename__ = "completed_workout"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    workout_plan_activity_id: Optional[int] = Field(default=None, foreign_key="workout_plan_activity.id")
-    workout_activity_id: Optional[int] = Field(default=None, foreign_key="workout_activity.id")
+    # Indexed because telemetry-delete and the VCS plan-delete guard scan by
+    # workout_plan_activity_id, and the plan PATCH path queries by it too.
+    workout_plan_activity_id: Optional[int] = Field(default=None, foreign_key="workout_plan_activity.id", index=True)
+    workout_activity_id: Optional[int] = Field(default=None, foreign_key="workout_activity.id", index=True)
     completed_workout_details_id: Optional[int] = Field(default=None, foreign_key="completed_workout_activity.id")
     client_telemetry_id: int = Field(
         foreign_key="client_telemetry.id",
         ondelete="CASCADE",
+        index=True,
     )
 
 

@@ -137,6 +137,8 @@ class WorkoutPlanInput(BaseModel):
 class CoachScheduleBlock(BaseModel):
     start_dt: datetime
     end_dt: datetime
+    repeats_weekly: bool = False
+    recurrence_end_dt: Optional[datetime] = None
 
     @model_validator(mode="after")
     def _ordered(self):

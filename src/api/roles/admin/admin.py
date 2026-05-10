@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone, date as date_cls
 from typing import List, Literal, Optional
 
 from src.database.session import get_session
-from src.database.account.models import Account
+from src.database.account.models import Account, Notification
 from src.database.client.models import Client
 from src.database.coach.models import Coach, Experience, Certifications, CoachExperience, CoachCertifications
 from src.database.admin.models import Admin
@@ -65,9 +65,48 @@ def serialize_admin_account(account: Account) -> AdminAccountItem:
         roles=admin_account_roles(account),
         status="active" if account.is_active else "deactivated",
         is_active=account.is_active,
+        is_suspended=account.is_suspended,
         created_at=account.created_at,
         last_active=None,
     )
+
+
+@router.post("/accounts/{account_id}/suspend", response_model=DeactivateAccountResponse)
+def suspend_account(
+    account_id: int,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_admin_account),
+):
+    target = db.get(Account, account_id)
+    if target is None:
+        raise HTTPException(404, detail="Account not found")
+    target.is_suspended = True
+    db.add(target)
+    db.commit()
+
+    affected_accounts = get_affected_accounts(db, target)
+    notify_affected_accounts(db, target, affected_accounts)
+    delete_client_coach_mappings(db, target)
+
+    db.refresh(target)
+    return DeactivateAccountResponse(success=True, message="Account suspended")
+
+
+@router.post("/accounts/{account_id}/unsuspend", response_model=ActivateAccountResponse)
+def unsuspend_account(
+    account_id: int,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_admin_account),
+):
+    target = db.get(Account, account_id)
+    if target is None:
+        raise HTTPException(404, detail="Account not found")
+    target.is_suspended = False
+    db.add(target)
+    db.commit()
+
+    db.refresh(target)
+    return ActivateAccountResponse(success=True, message="Account unsuspended")
 
 @router.get("/accounts", response_model=List[AdminAccountItem])
 def query_accounts(
@@ -106,57 +145,29 @@ def get_reports(
     db: Session = Depends(get_session),
     acc: Account = Depends(get_admin_account),
 ):
-    """Platform-wide reports feed for the admin dashboard. Merges:
-      - client_report (a coach reporting a client)
-      - coach_report  (a client reporting a coach)
-    into one chronologically-sorted list, joining each row to the reporter's
-    and reported user's display names so the UI can render the
-    "X reported Y" headline without further lookups."""
+    """Platform-wide reports feed for the admin dashboard.
+    Reads from the unified `account_report` table. The legacy
+    coach_report and client_report tables are deprecated — kept around
+    only so historic data isn't silently dropped while the migration
+    settles. New reports written from the UI all go to account_report
+    via /roles/shared/account/report/{account_id}.
+
+    `kind` is fixed at "account_on_account" — the old coach/client
+    distinction is gone since both directions share one table now."""
+    from src.database.reports.models import AccountReport
+
     items: List[AdminReportItem] = []
-
-    # Coach-on-client reports: reporter is the coach, target is the client.
-    client_reports = db.exec(select(ClientReport)).all()
-    for r in client_reports:
-        reporter_name = "Unknown coach"
-        reported_name = "Unknown client"
-        reported_account_id: Optional[int] = None
-        coach_acc = db.exec(select(Account).where(Account.coach_id == r.coach_id)).first()
-        if coach_acc:
-            reporter_name = coach_acc.name
-        client_acc = db.exec(select(Account).where(Account.client_id == r.client_id)).first()
-        if client_acc:
-            reported_name = client_acc.name
-            reported_account_id = client_acc.id
+    rows = db.exec(select(AccountReport)).all()
+    for r in rows:
+        reporter = db.get(Account, r.reporter_id)
+        reportee = db.get(Account, r.reportee_id)
         items.append(AdminReportItem(
             id=r.id,
-            kind="coach_on_client",
-            reporter_name=reporter_name,
-            reported_name=reported_name,
-            reported_account_id=reported_account_id,
-            reason=r.report_summary or "",
-            created_at=r.last_updated,
-        ))
-
-    # Client-on-coach reports: reporter is the client, target is the coach.
-    coach_reports = db.exec(select(CoachReport)).all()
-    for r in coach_reports:
-        reporter_name = "Unknown client"
-        reported_name = "Unknown coach"
-        reported_account_id = None
-        client_acc = db.exec(select(Account).where(Account.client_id == r.client_id)).first()
-        if client_acc:
-            reporter_name = client_acc.name
-        coach_acc = db.exec(select(Account).where(Account.coach_id == r.coach_id)).first()
-        if coach_acc:
-            reported_name = coach_acc.name
-            reported_account_id = coach_acc.id
-        items.append(AdminReportItem(
-            id=r.id,
-            kind="client_on_coach",
-            reporter_name=reporter_name,
-            reported_name=reported_name,
-            reported_account_id=reported_account_id,
-            reason=r.report_summary or "",
+            kind="account_on_account",
+            reporter_name=reporter.name if reporter else "Unknown",
+            reported_name=reportee.name if reportee else "Unknown",
+            reported_account_id=reportee.id if reportee else None,
+            reason=r.reason or "",
             created_at=r.last_updated,
         ))
 
@@ -167,17 +178,25 @@ def get_reports(
 
 @router.delete("/reports/{kind}/{report_id}")
 def delete_report(
-    kind: Literal["coach_on_client", "client_on_coach"],
+    kind: Literal["account_on_account", "coach_on_client", "client_on_coach"],
     report_id: int,
     db: Session = Depends(get_session),
     acc: Account = Depends(get_admin_account),
 ):
     """Resolve a report by removing it from the feed.
-    Used by both Dismiss (admin reviewed and decided no action needed) and the
-    Suspend escalation flow (account was suspended, the report itself can now
-    go away). The two report tables have independent primary keys so we need
-    `kind` plus `id` to pick the right row."""
-    model = ClientReport if kind == "coach_on_client" else CoachReport
+    Used by both Dismiss (admin reviewed and decided no action needed) and
+    the Suspend escalation flow (account was suspended, the report itself
+    can now go away). `kind` selects the underlying table — primary use is
+    "account_on_account" against the new account_report; the old
+    coach_on_client / client_on_coach paths are kept so dismissals from
+    deprecated tables still work during the migration window."""
+    from src.database.reports.models import AccountReport
+    if kind == "account_on_account":
+        model = AccountReport
+    elif kind == "coach_on_client":
+        model = ClientReport
+    else:  # "client_on_coach"
+        model = CoachReport
     target = db.get(model, report_id)
     if target is None:
         raise HTTPException(404, detail="Report not found.")
@@ -198,7 +217,6 @@ def get_platform_engagement(
     Both come from real tables and don't duplicate any other admin metric."""
     active_pairs = db.exec(
         select(func.count(ClientCoachRelationship.id))
-        .where(ClientCoachRelationship.is_active == True)  # noqa: E712
     ).one()
 
     total_messages = db.exec(select(func.count(ChatMessage.id))).one()
@@ -436,6 +454,16 @@ def resolve_coach_request(
     db.flush()
     # Update the request with the resolution id
     req.role_promotion_resolution_id = resolution.id
+
+    n = Notification(
+        account_id=account.id,
+        fav_category="coach_request_resolved",
+        message=f"Your coach request has been {'approved' if payload.is_approved else 'denied'}.",
+        details="The request was reviewed by an administrator.",
+    )
+
+    db.add(n)
+
     db.add(req)
 
     # If approved, mark the coach as verified

@@ -1,4 +1,3 @@
-from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,12 +12,7 @@ from src.database.coach_client_relationship.models import (
     ClientCoachRelationship,
     ClientCoachRequest,
 )
-from src.database.payment.models import (
-    BillingCycle,
-    PricingPlan,
-    Subscription,
-    SubscriptionStatus,
-)
+from src.api.roles.services import cancel_payments_for_request
 
 
 router = APIRouter(prefix="/roles/shared/blocks", tags=["shared", "blocks"])
@@ -55,9 +49,10 @@ def is_blocked_between(db, account_a_id: int, account_b_id: int) -> bool:
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 def _cancel_relationships_between(db, account_a: Account, account_b: Account) -> int:
-    """Flip is_active=False on every active relationship in either direction
-    between these two accounts and cancel any tied subscriptions/billing.
-    Returns the number of relationships ended."""
+    """Delete every relationship row between these two accounts (in either direction)
+    and cancel any tied subscriptions/billing. Returns the number of relationships ended.
+    Row existence is the source of truth for an active relationship.
+    """
     candidate_rels: list[ClientCoachRelationship] = []
 
     if account_a.client_id is not None and account_b.coach_id is not None:
@@ -68,7 +63,6 @@ def _cancel_relationships_between(db, account_a: Account, account_b: Account) ->
                 .where(
                     ClientCoachRequest.client_id == account_a.client_id,
                     ClientCoachRequest.coach_id == account_b.coach_id,
-                    ClientCoachRelationship.is_active.is_(True),
                 )
             ).all()
         )
@@ -81,48 +75,25 @@ def _cancel_relationships_between(db, account_a: Account, account_b: Account) ->
                 .where(
                     ClientCoachRequest.client_id == account_b.client_id,
                     ClientCoachRequest.coach_id == account_a.coach_id,
-                    ClientCoachRelationship.is_active.is_(True),
                 )
             ).all()
         )
 
     cancelled = 0
     for rel in candidate_rels:
-        rel.is_active = False
-        db.add(rel)
-        cancelled += 1
-
         req = db.get(ClientCoachRequest, rel.request_id)
         if req is not None:
-            plan = db.exec(
-                select(PricingPlan).where(PricingPlan.coach_id == req.coach_id)
-            ).first()
-            if plan:
-                sub = db.exec(
-                    select(Subscription).where(
-                        Subscription.client_id == req.client_id,
-                        Subscription.pricing_plan_id == plan.id,
-                    )
-                ).first()
-                if sub:
-                    sub.status = SubscriptionStatus.CANCELED
-                    sub.canceled_at = date.today()
-                    db.add(sub)
-                    cycles = db.exec(
-                        select(BillingCycle).where(
-                            BillingCycle.subscription_id == sub.id,
-                            BillingCycle.active == True,
-                        )
-                    ).all()
-                    for c in cycles:
-                        c.active = False
-                        db.add(c)
+            cancel_payments_for_request(db, req)
+        db.delete(rel)
+        cancelled += 1
 
     return cancelled
 
 
 def _coach_has_active_relationship_with_client(db, coach_account: Account, client_account: Account) -> bool:
-    """The "no rip-off" check: a coach in an active contract cannot block their client."""
+    """The "no rip-off" check: a coach in an active contract cannot block their client.
+    Active = a relationship row exists.
+    """
     if coach_account.coach_id is None or client_account.client_id is None:
         return False
     return db.exec(
@@ -131,7 +102,6 @@ def _coach_has_active_relationship_with_client(db, coach_account: Account, clien
         .where(
             ClientCoachRequest.coach_id == coach_account.coach_id,
             ClientCoachRequest.client_id == client_account.client_id,
-            ClientCoachRelationship.is_active.is_(True),
         )
     ).first() is not None
 

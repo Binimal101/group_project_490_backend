@@ -14,6 +14,7 @@ class Account(SQLModelLU, table=True):
   name: str
   email: EmailStr = Field(index=True)
   is_active: bool = Field(default=True)
+  is_suspended: bool = Field(default=False)
   # status: str = Field(default="active")
 
   # auth, ONE of these needs to be here
@@ -27,10 +28,17 @@ class Account(SQLModelLU, table=True):
 
   pfp_url: Optional[str] = None # pull from public supa bucket (private signing is too much rn)
 
-  # role relations
-  client_id: Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL") # all roles are clients by default
-  coach_id: Optional[int] = Field(default=None, foreign_key="coach.id", ondelete="SET NULL")
-  admin_id: Optional[int] = Field(default=None, foreign_key="admin.id")
+  # personal fitness goals
+  daily_steps_goal: Optional[int] = Field(default=10000)
+  daily_calorie_budget: Optional[int] = Field(default=2000)
+
+  # role relations — indexed because every JWT-authed request runs
+  # `WHERE Account.client_id == ?` or `Account.coach_id == ?` to map back from
+  # the role row to the parent account, and admin/coach dashboards filter by
+  # these in IN-clauses to enrich names alongside lists of clients/coaches.
+  client_id: Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL", index=True) # all roles are clients by default
+  coach_id: Optional[int] = Field(default=None, foreign_key="coach.id", ondelete="SET NULL", index=True)
+  admin_id: Optional[int] = Field(default=None, foreign_key="admin.id", index=True)
 
   created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
@@ -98,10 +106,12 @@ class Notification(SQLModelLU, table=True):
     __tablename__ = "notification"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    account_id: int = Field(foreign_key="account.id", ondelete="CASCADE")
-    
+    # The notification list endpoint filters by account_id on every poll —
+    # this is the single hottest read in the app.
+    account_id: int = Field(foreign_key="account.id", ondelete="CASCADE", index=True)
+
     fav_category: Optional[str] = None
-    
+
     message: str
     details: Optional[str] = None # if they do expandable dialogs we have it built in
     is_read: bool = False
