@@ -51,6 +51,14 @@ class PricingInterval(str, Enum):
   MONTHLY = "monthly"
   YEARLY = "yearly"
 
+
+# Single source of truth for the monthly-equivalent rate ceiling. The frontend
+# coach-request form caps user input at $500/mo; the leaderboard MVP ranking
+# normalizes against this constant. Bumping the limit here propagates through
+# both the validator below and the public ranking math.
+MAX_MONTHLY_PRICE_CENTS: int = 50_000  # $500.00 / month
+
+
 class PricingPlan(SQLModelLU, table=True):
   __tablename__ = "pricing_plan"  # type: ignore
   id: Optional[int] = Field(default=None, primary_key=True)
@@ -59,6 +67,17 @@ class PricingPlan(SQLModelLU, table=True):
   payment_interval: PricingInterval
   price_cents: int
   open_to_entry: bool = Field(default=True)
+
+  @field_validator("price_cents")
+  def validate_price_cents(cls, value):
+    if value < 0:
+      raise HTTPException(status_code=400, detail="Price in cents must be a non-negative integer")
+    # Yearly plans are stored as the full year amount; the monthly ceiling
+    # below is enforced after dividing by 12 at query time. Here we just
+    # reject obviously-bad inputs.
+    if value > MAX_MONTHLY_PRICE_CENTS * 12:
+      raise HTTPException(status_code=400, detail="Price exceeds platform ceiling")
+    return value
 
 class BillingCycle(SQLModelLU, table=True):
   __tablename__ = "billing_cycle"  # type: ignore

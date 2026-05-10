@@ -517,6 +517,32 @@ def delete_activity(
     return {"hidden": activity_id}
 
 
+@router.post("/activities/{activity_id}/unhide")
+def unhide_activity(
+    activity_id: int,
+    db: Session = Depends(get_session),
+    acc: Account = Depends(get_admin_account),
+):
+    """Restore a previously soft-hidden activity tier. Mirrors the workouts/plans unhide pattern."""
+    a = db.get(WorkoutActivity, activity_id)
+    if a is None:
+        raise HTTPException(404, detail="Activity not found")
+    a.is_hidden = False
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+    wo = db.get(Workout, a.workout_id)
+    return {
+        "id": a.id,
+        "workout_id": a.workout_id,
+        "workout_name": wo.name if wo else None,
+        "intensity_measure": a.intensity_measure,
+        "intensity_value": a.intensity_value,
+        "estimated_calories_per_unit_frequency": float(a.estimated_calories_per_unit_frequency),
+        "is_hidden": a.is_hidden,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # EQUIPMENT
 # ═══════════════════════════════════════════════════════════════════════════
