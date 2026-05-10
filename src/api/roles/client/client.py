@@ -742,20 +742,36 @@ def query_hirable_coaches(
 
     rows = db.exec(stmt).all()
 
+    # Batch-load every per-coach detail in 3 queries instead of 3 × N. With
+    # the default page size of 24 coaches that drops 72 round-trips to 3.
+    coach_ids = [r.coach_id for r in rows]
+    exps_by_coach: dict[int, list] = {}
+    certs_by_coach: dict[int, list] = {}
+    pricing_by_coach: dict[int, PricingPlan] = {}
+    if coach_ids:
+        for coach_id, exp in db.exec(
+            select(CoachExperience.coach_id, Experience)  # type: ignore
+            .join(Experience, Experience.id == CoachExperience.experience_id)
+            .where(CoachExperience.coach_id.in_(coach_ids))  # type: ignore
+        ).all():
+            exps_by_coach.setdefault(coach_id, []).append(exp)
+
+        for coach_id, cert in db.exec(
+            select(CoachCertifications.coach_id, Certifications)  # type: ignore
+            .join(Certifications, Certifications.id == CoachCertifications.certification_id)
+            .where(CoachCertifications.coach_id.in_(coach_ids))  # type: ignore
+        ).all():
+            certs_by_coach.setdefault(coach_id, []).append(cert)
+
+        # First pricing plan per coach (matches prior `.first()` semantics).
+        for p in db.exec(
+            select(PricingPlan).where(PricingPlan.coach_id.in_(coach_ids))  # type: ignore
+        ).all():
+            pricing_by_coach.setdefault(p.coach_id, p)
+
     result = []
     for r in rows:
-        # fetch experiences and certifications for this coach
-        exps = db.exec(
-            select(Experience).join(CoachExperience, CoachExperience.experience_id == Experience.id).where(CoachExperience.coach_id == r.coach_id)
-        ).all()
-        certs = db.exec(
-            select(Certifications).join(CoachCertifications, CoachCertifications.certification_id == Certifications.id).where(CoachCertifications.coach_id == r.coach_id)
-        ).all()
-
-        pricing = db.exec(
-            select(PricingPlan).where(PricingPlan.coach_id == r.coach_id)
-        ).first()
-
+        pricing = pricing_by_coach.get(r.coach_id)
         result.append(
             {
                 "coach_id": r.coach_id,
@@ -767,8 +783,8 @@ def query_hirable_coaches(
                 "specialties": r.specialties,
                 "avg_rating": float(r.avg_rating) if r.avg_rating is not None else None,
                 "rating_count": int(r.rating_count) if r.rating_count is not None else 0,
-                "experiences": exps,
-                "certifications": certs,
+                "experiences": exps_by_coach.get(r.coach_id, []),
+                "certifications": certs_by_coach.get(r.coach_id, []),
                 "payment_interval": pricing.payment_interval.value if pricing else None,
                 "price_cents": pricing.price_cents if pricing else None,
             }

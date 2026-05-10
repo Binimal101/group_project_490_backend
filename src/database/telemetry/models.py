@@ -12,7 +12,10 @@ class ClientTelemetry(SQLModelLU, table=True):
     __tablename__ = "client_telemetry"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    client_id: int = Field(foreign_key="client.id", ondelete="CASCADE")
+    # Both client dashboards and coach dashboards filter telemetry by client_id
+    # constantly (calories today, weekly graphs, etc) — this column is the most
+    # frequent WHERE-target after primary keys.
+    client_id: int = Field(foreign_key="client.id", ondelete="CASCADE", index=True)
     telemetry_type: Optional[str] = Field(default=None, index=True)
     date: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
@@ -169,9 +172,12 @@ class CompletedMealActivity(SQLModelLU, table=True):
     on_demand_meal_id: Optional[int] = Field(default=None, foreign_key="meal.id")
     # Multiple meals per day are allowed (breakfast + lunch + dinner all share
     # the same client_telemetry row), so client_telemetry_id is NOT unique.
+    # Indexed because the meals-today endpoint joins through this on every
+    # client dashboard load.
     client_telemetry_id: int = Field(
         foreign_key="client_telemetry.id",
         ondelete="CASCADE",
+        index=True,
     )
     # Tag each log with its kind ("breakfast"/"lunch"/"dinner"/"snack") so the
     # client dashboard can group meals and the coach can review the plan
@@ -183,12 +189,15 @@ class CompletedWorkout(SQLModelLU, table=True):
     __tablename__ = "completed_workout"  # type: ignore
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    workout_plan_activity_id: Optional[int] = Field(default=None, foreign_key="workout_plan_activity.id")
-    workout_activity_id: Optional[int] = Field(default=None, foreign_key="workout_activity.id")
+    # Indexed because telemetry-delete and the VCS plan-delete guard scan by
+    # workout_plan_activity_id, and the plan PATCH path queries by it too.
+    workout_plan_activity_id: Optional[int] = Field(default=None, foreign_key="workout_plan_activity.id", index=True)
+    workout_activity_id: Optional[int] = Field(default=None, foreign_key="workout_activity.id", index=True)
     completed_workout_details_id: Optional[int] = Field(default=None, foreign_key="completed_workout_activity.id")
     client_telemetry_id: int = Field(
         foreign_key="client_telemetry.id",
         ondelete="CASCADE",
+        index=True,
     )
 
 

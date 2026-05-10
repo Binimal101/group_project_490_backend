@@ -639,10 +639,27 @@ def get_client_requests(db = Depends(get_session), acc: Account = Depends(get_co
         ClientCoachRequest.is_accepted.is_(None)  # pending
     ).all()
 
+    # Batch-fetch every account and every fitness-goal row matching the
+    # request set in two queries instead of 2 × N. This used to be the
+    # dominant cost on the coach dashboard's pending-requests panel.
+    client_ids = [r.client_id for r in requests]
+    accounts_by_client_id: dict[int, Account] = {}
+    goals_by_client_id: dict[int, list[FitnessGoals]] = {}
+    if client_ids:
+        for a in db.exec(
+            select(Account).where(Account.client_id.in_(client_ids))  # type: ignore
+        ).all():
+            if a.client_id is not None:
+                accounts_by_client_id[a.client_id] = a
+        for g in db.exec(
+            select(FitnessGoals).where(FitnessGoals.client_id.in_(client_ids))  # type: ignore
+        ).all():
+            goals_by_client_id.setdefault(g.client_id, []).append(g)
+
     items = []
     for r in requests:
-        account = db.exec(select(Account).where(Account.client_id == r.client_id)).first()
-        fitness_goals = list(db.exec(select(FitnessGoals).where(FitnessGoals.client_id == r.client_id)).all())
+        account = accounts_by_client_id.get(r.client_id)
+        fitness_goals = goals_by_client_id.get(r.client_id, [])
         base_account = None
         if account:
             base_account = {"id": account.id, "name": account.name, "email": account.email, "is_active": account.is_active, "gcp_user_id": account.gcp_user_id, "gender": account.gender, "bio": account.bio, "age": account.age, "pfp_url": account.pfp_url, "client_id": account.client_id, "coach_id": account.coach_id, "admin_id": account.admin_id, "created_at": account.created_at}
@@ -696,11 +713,24 @@ def get_my_accepted_clients(
     stmt = stmt.order_by(Account.name).offset(skip).limit(limit)
     rows = db.exec(stmt).all()
 
+    # Batch-load the latest fitness goal per client. Previous implementation
+    # fired one SELECT per row in the loop — at limit=24 that's 24 extra
+    # round-trips on every dashboard render.
+    client_ids = [r.client_id for r in rows]
+    latest_goal_by_client: dict[int, FitnessGoals] = {}
+    if client_ids:
+        # Order by id desc so the first row we see per client_id wins.
+        for g in db.exec(
+            select(FitnessGoals)
+            .where(FitnessGoals.client_id.in_(client_ids))  # type: ignore
+            .order_by(FitnessGoals.id.desc())  # type: ignore
+        ).all():
+            if g.client_id not in latest_goal_by_client:
+                latest_goal_by_client[g.client_id] = g
+
     items = []
     for r in rows:
-        goal_row = db.exec(
-            select(FitnessGoals).where(FitnessGoals.client_id == r.client_id).order_by(FitnessGoals.id.desc())
-        ).first()
+        goal_row = latest_goal_by_client.get(r.client_id)
         items.append({
             "relationship_id": r.relationship_id,
             "client_id": r.client_id,

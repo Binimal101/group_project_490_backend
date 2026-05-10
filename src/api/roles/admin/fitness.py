@@ -66,34 +66,79 @@ def _enrich_workout(db: Session, w: Workout) -> dict:
 
 
 def _enrich_plan(db: Session, plan: WorkoutPlan) -> dict:
-    activities = db.exec(
-        select(WorkoutPlanActivity).where(WorkoutPlanActivity.workout_plan_id == plan.id)
-    ).all()
-    rows = []
-    for pa in activities:
-        wa = db.get(WorkoutActivity, pa.workout_activity_id)
-        wo = db.get(Workout, wa.workout_id) if wa else None
-        rows.append({
-            "id": pa.id,
-            "workout_activity_id": pa.workout_activity_id,
-            "workout_id": wa.workout_id if wa else None,
-            "workout_name": wo.name if wo else None,
-            "workout_type": wo.workout_type if wo else None,
-            "intensity_measure": wa.intensity_measure if wa else None,
-            "intensity_value": wa.intensity_value if wa else None,
-            "planned_reps": pa.planned_reps,
-            "planned_sets": pa.planned_sets,
-            "planned_duration": pa.planned_duration,
-            "estimated_calories": float(pa.estimated_calories) if pa.estimated_calories is not None else None,
+    return _enrich_plans(db, [plan])[0]
+
+
+def _enrich_plans(db: Session, plans: list[WorkoutPlan]) -> list[dict]:
+    """Batch variant: 3 queries total regardless of plan count.
+
+    Admin's listing endpoint calls this with up to PaginationParams.limit
+    plans; without batching, a 50-plan page with 5 activities each ran 500+
+    SELECTs (loop × 2 db.gets per activity).
+    """
+    if not plans:
+        return []
+
+    plan_ids = [p.id for p in plans if p.id is not None]
+    if plan_ids:
+        wpas = db.exec(
+            select(WorkoutPlanActivity).where(
+                WorkoutPlanActivity.workout_plan_id.in_(plan_ids)  # type: ignore
+            )
+        ).all()
+    else:
+        wpas = []
+
+    activity_ids = {pa.workout_activity_id for pa in wpas if pa.workout_activity_id is not None}
+    activities_by_id: dict[int, WorkoutActivity] = {}
+    if activity_ids:
+        for a in db.exec(
+            select(WorkoutActivity).where(WorkoutActivity.id.in_(activity_ids))  # type: ignore
+        ).all():
+            if a.id is not None:
+                activities_by_id[a.id] = a
+
+    workout_ids = {a.workout_id for a in activities_by_id.values() if a.workout_id is not None}
+    workouts_by_id: dict[int, Workout] = {}
+    if workout_ids:
+        for w in db.exec(
+            select(Workout).where(Workout.id.in_(workout_ids))  # type: ignore
+        ).all():
+            if w.id is not None:
+                workouts_by_id[w.id] = w
+
+    wpas_by_plan: dict[int, list[WorkoutPlanActivity]] = {}
+    for pa in wpas:
+        wpas_by_plan.setdefault(pa.workout_plan_id, []).append(pa)
+
+    out: list[dict] = []
+    for plan in plans:
+        rows = []
+        for pa in wpas_by_plan.get(plan.id, []):  # type: ignore[arg-type]
+            wa = activities_by_id.get(pa.workout_activity_id)
+            wo = workouts_by_id.get(wa.workout_id) if wa else None
+            rows.append({
+                "id": pa.id,
+                "workout_activity_id": pa.workout_activity_id,
+                "workout_id": wa.workout_id if wa else None,
+                "workout_name": wo.name if wo else None,
+                "workout_type": wo.workout_type if wo else None,
+                "intensity_measure": wa.intensity_measure if wa else None,
+                "intensity_value": wa.intensity_value if wa else None,
+                "planned_reps": pa.planned_reps,
+                "planned_sets": pa.planned_sets,
+                "planned_duration": pa.planned_duration,
+                "estimated_calories": float(pa.estimated_calories) if pa.estimated_calories is not None else None,
+            })
+        out.append({
+            "id": plan.id,
+            "strata_name": plan.strata_name,
+            "is_public": plan.is_public,
+            "is_hidden": plan.is_hidden,
+            "created_by_account_id": plan.created_by_account_id,
+            "activities": rows,
         })
-    return {
-        "id": plan.id,
-        "strata_name": plan.strata_name,
-        "is_public": plan.is_public,
-        "is_hidden": plan.is_hidden,
-        "created_by_account_id": plan.created_by_account_id,
-        "activities": rows,
-    }
+    return out
 
 
 # ─── reference checks (do telemetry/scheduled CWPs touch this row?) ──────────
@@ -601,7 +646,7 @@ def list_plans(
     if text:
         query = query.where(WorkoutPlan.strata_name.contains(text))  # type: ignore
     rows = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
-    return [_enrich_plan(db, p) for p in rows]
+    return _enrich_plans(db, list(rows))
 
 
 @router.post("/plans")

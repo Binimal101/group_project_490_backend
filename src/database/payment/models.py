@@ -54,7 +54,8 @@ class PricingInterval(str, Enum):
 class PricingPlan(SQLModelLU, table=True):
   __tablename__ = "pricing_plan"  # type: ignore
   id: Optional[int] = Field(default=None, primary_key=True)
-  coach_id: int = Field(foreign_key="coach.id", ondelete="CASCADE")
+  # Coach-listing pages and the cron filter pricing plans by coach_id; index it.
+  coach_id: int = Field(foreign_key="coach.id", ondelete="CASCADE", index=True)
   payment_interval: PricingInterval
   price_cents: int
   open_to_entry: bool = Field(default=True)
@@ -65,14 +66,17 @@ class BillingCycle(SQLModelLU, table=True):
   active : bool
   entry_date : date
   end_date : date
-  subscription_id : int = Field(foreign_key="subscription.id", ondelete="CASCADE")
-  pricing_plan_id : int = Field(foreign_key="pricing_plan.id", ondelete="CASCADE")
+  # refresh_payments scans cycles by subscription_id every cron run.
+  subscription_id : int = Field(foreign_key="subscription.id", ondelete="CASCADE", index=True)
+  pricing_plan_id : int = Field(foreign_key="pricing_plan.id", ondelete="CASCADE", index=True)
 
 class Invoice(SQLModelLU, table=True):
   __tablename__ = "invoice"  # type: ignore
   id : Optional[int] = Field(default=None, primary_key=True)
-  billing_cycle_id : Optional[int] = Field(default=None, foreign_key="billing_cycle.id", ondelete="CASCADE")
-  client_id : Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL")
+  # Both billing-cycle scans (cron settle) and client invoice listings filter
+  # invoices by these — neither was indexed before.
+  billing_cycle_id : Optional[int] = Field(default=None, foreign_key="billing_cycle.id", ondelete="CASCADE", index=True)
+  client_id : Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL", index=True)
   amount : float
   outstanding_balance : float
 
@@ -85,8 +89,10 @@ class SubscriptionStatus(str, Enum):
 class Subscription(SQLModelLU, table=True):
   __tablename__ = "subscription"  # type: ignore
   id: Optional[int] = Field(default=None, primary_key=True)
-  client_id: int = Field(foreign_key="client.id", ondelete="CASCADE")
-  pricing_plan_id: Optional[int] = Field(default=None, foreign_key="pricing_plan.id", ondelete="SET NULL")
+  # The cron job filters active subs by client_id; the client invoice page
+  # joins through here too.
+  client_id: int = Field(foreign_key="client.id", ondelete="CASCADE", index=True)
+  pricing_plan_id: Optional[int] = Field(default=None, foreign_key="pricing_plan.id", ondelete="SET NULL", index=True)
 
   status: SubscriptionStatus = Field(default=SubscriptionStatus.ACTIVE)
   start_date: date = Field(default_factory=date.today)  

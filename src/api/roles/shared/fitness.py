@@ -19,39 +19,89 @@ router = APIRouter(prefix="/roles/shared/fitness", tags=["shared", "fitness"])
 
 
 def _enrich_plan(db: Session, plan: WorkoutPlan) -> dict:
-    # PRD v2: skip soft-deleted activities so callers see the live plan shape.
-    plan_activities = db.exec(
-        select(WorkoutPlanActivity)
-        .where(WorkoutPlanActivity.workout_plan_id == plan.id)
-        .where(WorkoutPlanActivity.is_hidden == False)  # noqa: E712
-    ).all()
-    enriched_activities = []
-    for pa in plan_activities:
-        activity = db.get(WorkoutActivity, pa.workout_activity_id)
-        workout = db.get(Workout, activity.workout_id) if activity else None
-        enriched_activities.append({
-            "id": pa.id,
-            "workout_activity_id": pa.workout_activity_id,
-            "workout_id": activity.workout_id if activity else None,
-            "workout_name": workout.name if workout else None,
-            "workout_type": workout.workout_type if workout else None,
-            "intensity_measure": activity.intensity_measure if activity else None,
-            "intensity_value": activity.intensity_value if activity else None,
-            "planned_reps": pa.planned_reps,
-            "planned_sets": pa.planned_sets,
-            "planned_duration": pa.planned_duration,
-            "estimated_calories": float(pa.estimated_calories) if pa.estimated_calories is not None else None,
+    """Single-plan variant; for N>1 plans, prefer `_enrich_plans` to amortize
+    the activity/workout loads across all plans."""
+    return _enrich_plans(db, [plan])[0]
+
+
+def _enrich_plans(db: Session, plans: list[WorkoutPlan]) -> list[dict]:
+    """Batch-enrich N plans with one query per join level — total 3 queries
+    regardless of how many plans/activities are present:
+
+      1. all visible WorkoutPlanActivity rows for the given plan ids
+      2. all WorkoutActivity rows for those wpa.workout_activity_id values
+      3. all Workout rows for those activity.workout_id values
+
+    Replaces a per-activity `db.get(WorkoutActivity)` + `db.get(Workout)` pair
+    that, on a list endpoint with 20 plans × 5 activities, was firing 200+
+    SELECTs.
+    """
+    if not plans:
+        return []
+
+    plan_ids = [p.id for p in plans if p.id is not None]
+    if plan_ids:
+        wpas = db.exec(
+            select(WorkoutPlanActivity)
+            .where(WorkoutPlanActivity.workout_plan_id.in_(plan_ids))  # type: ignore
+            .where(WorkoutPlanActivity.is_hidden == False)  # noqa: E712
+        ).all()
+    else:
+        wpas = []
+
+    activity_ids = {pa.workout_activity_id for pa in wpas if pa.workout_activity_id is not None}
+    activities_by_id: dict[int, WorkoutActivity] = {}
+    if activity_ids:
+        for a in db.exec(
+            select(WorkoutActivity).where(WorkoutActivity.id.in_(activity_ids))  # type: ignore
+        ).all():
+            if a.id is not None:
+                activities_by_id[a.id] = a
+
+    workout_ids = {a.workout_id for a in activities_by_id.values() if a.workout_id is not None}
+    workouts_by_id: dict[int, Workout] = {}
+    if workout_ids:
+        for w in db.exec(
+            select(Workout).where(Workout.id.in_(workout_ids))  # type: ignore
+        ).all():
+            if w.id is not None:
+                workouts_by_id[w.id] = w
+
+    # Group wpa rows by plan_id so we render activities under the right plan.
+    wpas_by_plan: dict[int, list[WorkoutPlanActivity]] = {}
+    for pa in wpas:
+        wpas_by_plan.setdefault(pa.workout_plan_id, []).append(pa)
+
+    out: list[dict] = []
+    for plan in plans:
+        enriched_activities = []
+        for pa in wpas_by_plan.get(plan.id, []):  # type: ignore[arg-type]
+            activity = activities_by_id.get(pa.workout_activity_id)
+            workout = workouts_by_id.get(activity.workout_id) if activity else None
+            enriched_activities.append({
+                "id": pa.id,
+                "workout_activity_id": pa.workout_activity_id,
+                "workout_id": activity.workout_id if activity else None,
+                "workout_name": workout.name if workout else None,
+                "workout_type": workout.workout_type if workout else None,
+                "intensity_measure": activity.intensity_measure if activity else None,
+                "intensity_value": activity.intensity_value if activity else None,
+                "planned_reps": pa.planned_reps,
+                "planned_sets": pa.planned_sets,
+                "planned_duration": pa.planned_duration,
+                "estimated_calories": float(pa.estimated_calories) if pa.estimated_calories is not None else None,
+            })
+        out.append({
+            "id": plan.id,
+            "strata_name": plan.strata_name,
+            "is_public": plan.is_public,
+            "is_hidden": plan.is_hidden,
+            "is_forked": plan.is_forked,
+            "forked_from_plan_id": plan.forked_from_plan_id,
+            "created_by_account_id": plan.created_by_account_id,
+            "activities": enriched_activities,
         })
-    return {
-        "id": plan.id,
-        "strata_name": plan.strata_name,
-        "is_public": plan.is_public,
-        "is_hidden": plan.is_hidden,
-        "is_forked": plan.is_forked,
-        "forked_from_plan_id": plan.forked_from_plan_id,
-        "created_by_account_id": plan.created_by_account_id,
-        "activities": enriched_activities,
-    }
+    return out
 
 
 # ─── PRD v2 helpers ──────────────────────────────────────────────────────────
@@ -289,7 +339,7 @@ def query_workout_plans(
         query = query.where(WorkoutPlan.is_public == True)  # type: ignore
 
     plans = db.exec(query.offset(pagination.skip).limit(pagination.limit)).all()
-    return [_enrich_plan(db, plan) for plan in plans]
+    return _enrich_plans(db, list(plans))
 
 
 # ── Plan modification endpoints (owner only, VCS-backed) ─────────────────────
