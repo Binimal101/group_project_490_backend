@@ -141,8 +141,9 @@ def _plan_has_telemetry(db: Session, plan_id: int) -> bool:
     return hit is not None
 
 
-# PRD v2: _fork_plan is removed. Edits are in-place; explicit copy lives in
-# /plan/{id}/copy below.
+# Fork-on-edit: rename / add / remove activity each create a new plan version
+# and hide the old one (see _fork_plan defined further down). The explicit
+# user-initiated copy still lives in /plan/{id}/copy.
 
 
 @router.post("/plan", response_model=CreateWorkoutPlanResponse)
@@ -317,6 +318,75 @@ def _get_owned_plan(plan_id: int, db: Session, acc: Account) -> WorkoutPlan:
     return plan
 
 
+def _fork_plan(
+    db: Session,
+    old: WorkoutPlan,
+    acc: Account,
+    *,
+    overrides: Optional[dict] = None,
+    add_activity: Optional[WorkoutPlanActivity] = None,
+    skip_activity_id: Optional[int] = None,
+) -> WorkoutPlan:
+    """Fork-on-edit: create a new WorkoutPlan that's a copy of `old` with
+    `overrides` applied, then mark `old` (and its activities) is_hidden=True
+    so it stops appearing in queries. Existing CWP/CompletedWorkout rows
+    keep referencing the old plan + its activities — versioning here is
+    purely about "what shows up when the user browses their library."
+
+    Three modes via kwargs:
+      - rename / publish toggle  → overrides only, copy all activities
+      - add an activity          → overrides=None, add_activity=<row>
+      - remove an activity       → overrides=None, skip_activity_id=<id>
+    """
+    new = WorkoutPlan(
+        strata_name=old.strata_name,
+        is_public=old.is_public,
+        is_hidden=False,
+        created_by_account_id=old.created_by_account_id,
+        is_forked=old.is_forked,
+        forked_from_plan_id=old.forked_from_plan_id,
+    )
+    if overrides:
+        for k, v in overrides.items():
+            setattr(new, k, v)
+    db.add(new)
+    db.flush()  # need new.id
+
+    # Copy non-hidden activities, optionally skipping one (remove flow).
+    old_acts = db.exec(
+        select(WorkoutPlanActivity).where(
+            WorkoutPlanActivity.workout_plan_id == old.id,
+            WorkoutPlanActivity.is_hidden == False,  # noqa: E712
+        )
+    ).all()
+    for pa in old_acts:
+        if skip_activity_id is not None and pa.id == skip_activity_id:
+            continue
+        db.add(WorkoutPlanActivity(
+            workout_plan_id=new.id,
+            workout_activity_id=pa.workout_activity_id,
+            estimated_calories=pa.estimated_calories,
+            modified_by_account_id=acc.id,
+            planned_duration=pa.planned_duration,
+            planned_reps=pa.planned_reps,
+            planned_sets=pa.planned_sets,
+        ))
+
+    if add_activity is not None:
+        add_activity.workout_plan_id = new.id
+        db.add(add_activity)
+
+    # Hide the old plan + its activities. Telemetry rows reference activity
+    # ids directly — they keep resolving through the hidden chain.
+    old.is_hidden = True
+    db.add(old)
+    for pa in old_acts:
+        pa.is_hidden = True
+        db.add(pa)
+
+    return new
+
+
 @router.patch("/plan/{plan_id}")
 def update_workout_plan(
     plan_id: int,
@@ -324,44 +394,60 @@ def update_workout_plan(
     db: Session = Depends(get_session),
     acc: Account = Depends(get_active_account),
 ):
-    """PRD v2: in-place rename / publish toggle. No fork.
+    """VCS-style fork-on-edit: produce a new plan version for rename / publish
+    toggle, hide the old one. The CWP/CompletedWorkout rows still reference
+    the old plan + its activities — versioning is purely about which row the
+    library queries surface.
 
     Forked plans cannot be made public (`is_public=True` 400's if `is_forked`).
-    Notification fanout to every library holder ≠ editor.
+    Notification fanout targets every library holder ≠ editor.
     """
-    plan = _get_owned_plan(plan_id, db, acc)
-    old_name = plan.strata_name
+    old = _get_owned_plan(plan_id, db, acc)
+    old_name = old.strata_name
 
+    overrides: dict = {}
     changes = []
     if payload.strata_name is not None:
         new_name = payload.strata_name.strip()
-        if new_name and new_name != plan.strata_name:
-            plan.strata_name = new_name
+        if new_name and new_name != old.strata_name:
+            overrides["strata_name"] = new_name
             changes.append(f"renamed to '{new_name}'")
 
     if payload.is_public is not None:
-        if payload.is_public and plan.is_forked:
+        if payload.is_public and old.is_forked:
             raise HTTPException(
                 status_code=400,
                 detail="Forked plans cannot be published.",
             )
-        if payload.is_public != plan.is_public:
-            plan.is_public = payload.is_public
+        if payload.is_public != old.is_public:
+            overrides["is_public"] = payload.is_public
             changes.append("published" if payload.is_public else "unpublished")
 
-    db.add(plan)
+    # No-op patch: just return the current plan unchanged.
+    if not overrides:
+        db.commit()
+        return _enrich_plan(db, old)
+
+    new = _fork_plan(db, old, acc, overrides=overrides)
+    # Move every library entry from the old plan over to the new version so
+    # holders' libraries stay correct.
+    for entry in db.exec(
+        select(PlanLibraryEntry).where(PlanLibraryEntry.workout_plan_id == old.id)
+    ).all():
+        entry.workout_plan_id = new.id  # type: ignore
+        db.add(entry)
 
     if changes and acc.id is not None:
         _fanout_plan_changed(
             db,
-            plan=plan,
+            plan=new,
             editor_account_id=acc.id,
             summary=f"'{old_name}': " + ", ".join(changes),
         )
 
     db.commit()
-    db.refresh(plan)
-    return _enrich_plan(db, plan)
+    db.refresh(new)
+    return _enrich_plan(db, new)
 
 
 @router.delete("/plan/{plan_id}")
@@ -370,42 +456,37 @@ def delete_workout_plan(
     db: Session = Depends(get_session),
     acc: Account = Depends(get_active_account),
 ):
-    """PRD v2: hard-delete if no telemetry exists, else archive (is_hidden=True)
-    so caloric history stays attributable. Library entries cascade on hard delete.
+    """Hard-delete iff no telemetry references this plan; otherwise refuse
+    with 409. Caloric attribution must not be silently destroyed — if the
+    caller wants the plan out of their library while preserving history,
+    they should hide/replace it via PATCH (which already produces a new
+    version), not DELETE.
     """
     plan = _get_owned_plan(plan_id, db, acc)
     plan_name = plan.strata_name
 
     if _plan_has_telemetry(db, plan_id):
-        # Archive: mark plan + every wpa hidden, leave library entries intact
-        # so existing CompletedWorkout rows still resolve through the chain.
-        plan.is_hidden = True
-        db.add(plan)
-        for pa in db.exec(
-            select(WorkoutPlanActivity).where(WorkoutPlanActivity.workout_plan_id == plan_id)
-        ).all():
-            pa.is_hidden = True
-            db.add(pa)
-        if acc.id is not None:
-            _fanout_plan_changed(
-                db,
-                plan=plan,
-                editor_account_id=acc.id,
-                summary=f"'{plan_name}' was archived",
-                category="plan_archived",
-            )
-        db.commit()
-        return {"archived": plan_id}
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete a plan with completed-workout history. "
+                   "Edit it (which creates a new version) to remove it from your library.",
+        )
 
-    # No telemetry — hard delete. Library entries cascade via the FK.
+    # No telemetry — hard delete. Clean up rows that reference plan_id first
+    # since plan_library_entry has no ON DELETE CASCADE on workout_plan_id.
     activities = db.exec(
         select(WorkoutPlanActivity).where(WorkoutPlanActivity.workout_plan_id == plan_id)
     ).all()
     for a in activities:
         db.delete(a)
+
+    for entry in db.exec(
+        select(PlanLibraryEntry).where(PlanLibraryEntry.workout_plan_id == plan_id)
+    ).all():
+        db.delete(entry)
+
     # Notify holders BEFORE we delete the plan so plan.strata_name is still
-    # available; library-entry FK has ON DELETE CASCADE so the notifications
-    # can outlive the plan row.
+    # available.
     if acc.id is not None:
         _fanout_plan_changed(
             db,
@@ -427,8 +508,11 @@ def add_plan_activity(
     db: Session = Depends(get_session),
     acc: Account = Depends(get_active_account),
 ):
-    """PRD v2: append a WorkoutPlanActivity in place. No fork."""
-    plan = _get_owned_plan(plan_id, db, acc)
+    """VCS-style fork-on-edit: append a WorkoutPlanActivity by forking the
+    plan, copying every existing activity onto the new version, then adding
+    the new one. The old plan is hidden.
+    """
+    old = _get_owned_plan(plan_id, db, acc)
     activity = db.get(WorkoutActivity, payload.workout_activity_id)
     if not activity:
         raise HTTPException(status_code=404, detail=f"WorkoutActivity {payload.workout_activity_id} not found")
@@ -438,30 +522,37 @@ def add_plan_activity(
     )
     estimated_calories = activity.estimated_calories_per_unit_frequency * frequency
 
+    # _fork_plan attaches this row to the new plan id once flush gives it one.
     new_pa = WorkoutPlanActivity(
-        workout_plan_id=plan.id,
+        workout_plan_id=0,  # placeholder; reassigned inside _fork_plan
         workout_activity_id=payload.workout_activity_id,
         estimated_calories=estimated_calories,
-        modified_by_account_id=acc.id,
+        modified_by_account_id=acc.id,  # type: ignore
         planned_duration=payload.planned_duration,
         planned_reps=payload.planned_reps,
         planned_sets=payload.planned_sets,
     )
-    db.add(new_pa)
+
+    new = _fork_plan(db, old, acc, add_activity=new_pa)
+    for entry in db.exec(
+        select(PlanLibraryEntry).where(PlanLibraryEntry.workout_plan_id == old.id)
+    ).all():
+        entry.workout_plan_id = new.id  # type: ignore
+        db.add(entry)
 
     workout = db.get(Workout, activity.workout_id) if activity else None
     workout_name = workout.name if workout else f"activity #{payload.workout_activity_id}"
     if acc.id is not None:
         _fanout_plan_changed(
             db,
-            plan=plan,
+            plan=new,
             editor_account_id=acc.id,
-            summary=f"added '{workout_name}' to '{plan.strata_name}'",
+            summary=f"added '{workout_name}' to '{new.strata_name}'",
         )
 
     db.commit()
-    db.refresh(plan)
-    return _enrich_plan(db, plan)
+    db.refresh(new)
+    return _enrich_plan(db, new)
 
 
 @router.delete("/plan/{plan_id}/activity/{activity_id}")
@@ -471,10 +562,11 @@ def remove_plan_activity(
     db: Session = Depends(get_session),
     acc: Account = Depends(get_active_account),
 ):
-    """PRD v2: in-place remove. Hard-delete if the wpa has no telemetry,
-    else soft-delete (is_hidden=True) to preserve caloric attribution.
+    """VCS-style fork-on-edit: remove an activity by forking the plan and
+    skipping that activity in the copy. The old plan + its activities (with
+    their CompletedWorkout backreferences) stay intact but hidden.
     """
-    plan = _get_owned_plan(plan_id, db, acc)
+    old = _get_owned_plan(plan_id, db, acc)
     pa = db.get(WorkoutPlanActivity, activity_id)
     if pa is None or pa.workout_plan_id != plan_id or pa.is_hidden:
         raise HTTPException(status_code=404, detail="Activity not found in this plan")
@@ -483,29 +575,24 @@ def remove_plan_activity(
     removed_workout = db.get(Workout, removed_activity.workout_id) if removed_activity else None
     removed_name = removed_workout.name if removed_workout else f"activity #{pa.workout_activity_id}"
 
-    # Activity-level telemetry check.
-    from src.database.telemetry.models import CompletedWorkout
-    has_logs = db.exec(
-        select(CompletedWorkout).where(CompletedWorkout.workout_plan_activity_id == activity_id)
-    ).first() is not None
-
-    if has_logs:
-        pa.is_hidden = True
-        db.add(pa)
-    else:
-        db.delete(pa)
+    new = _fork_plan(db, old, acc, skip_activity_id=activity_id)
+    for entry in db.exec(
+        select(PlanLibraryEntry).where(PlanLibraryEntry.workout_plan_id == old.id)
+    ).all():
+        entry.workout_plan_id = new.id  # type: ignore
+        db.add(entry)
 
     if acc.id is not None:
         _fanout_plan_changed(
             db,
-            plan=plan,
+            plan=new,
             editor_account_id=acc.id,
-            summary=f"removed '{removed_name}' from '{plan.strata_name}'",
+            summary=f"removed '{removed_name}' from '{new.strata_name}'",
         )
 
     db.commit()
-    db.refresh(plan)
-    return _enrich_plan(db, plan)
+    db.refresh(new)
+    return _enrich_plan(db, new)
 
 
 # ─── PRD v2 NEW ENDPOINTS: save + copy ───────────────────────────────────────

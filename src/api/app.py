@@ -153,7 +153,9 @@ def refresh_payments(payload: dict = Body(...), db = Depends(get_session)):
                     )
                 ).first()
                 if overdue_rel:
-                    db.delete(overdue_rel)
+                    # Soft-end so admin/history views still resolve the join.
+                    overdue_rel.is_active = False
+                    db.add(overdue_rel)
 
             client_name = client_account.name if client_account else "The client"
             if client_account and client_account.id is not None:

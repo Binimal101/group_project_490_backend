@@ -477,16 +477,33 @@ def log_workout_activity_endpoint(
 
 @router.get("/query/plans")
 def query_client_workout_plans(
-    from_dt: Optional[datetime] = None,
-    to_dt: Optional[datetime] = None,
+    from_dt: Optional[str] = None,
+    to_dt: Optional[str] = None,
     pagination: PaginationParams = Depends(PaginationParams),
     db: Session = Depends(get_session),
     acc: Account = Depends(get_client_account)
 ):
     from datetime import timezone
+
+    def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+        # URL query params decode `+` as a space, so an ISO timestamp like
+        # `2026-05-30T10:00:00+00:00` arrives here as `...10:00:00 00:00`.
+        # Swap it back before parsing so the test client (which builds query
+        # strings via .isoformat()) round-trips cleanly without forcing every
+        # caller to manually url-encode.
+        if value is None:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return datetime.fromisoformat(value.replace(" ", "+"))
+
+    parsed_from = _parse_iso(from_dt)
+    parsed_to = _parse_iso(to_dt)
+
     now = datetime.now(timezone.utc)
-    range_start = from_dt if from_dt is not None else now
-    range_end = to_dt if to_dt is not None else now + timedelta(weeks=8)
+    range_start = parsed_from if parsed_from is not None else now
+    range_end = parsed_to if parsed_to is not None else now + timedelta(weeks=8)
     return list_scheduled_plans_for_client_in_range(db, acc.client_id, range_start, range_end)
 
 
