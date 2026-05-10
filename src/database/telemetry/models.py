@@ -14,8 +14,9 @@ class ClientTelemetry(SQLModelLU, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     # Both client dashboards and coach dashboards filter telemetry by client_id
     # constantly (calories today, weekly graphs, etc) — this column is the most
-    # frequent WHERE-target after primary keys.
-    client_id: int = Field(foreign_key="client.id", ondelete="CASCADE", index=True)
+    # frequent WHERE-target after primary keys. SET NULL (was CASCADE) so a
+    # deleted client doesn't blow away their telemetry log.
+    client_id: Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL", index=True)
     telemetry_type: Optional[str] = Field(default=None, index=True)
     date: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),

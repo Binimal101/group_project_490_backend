@@ -63,7 +63,9 @@ class PricingPlan(SQLModelLU, table=True):
   __tablename__ = "pricing_plan"  # type: ignore
   id: Optional[int] = Field(default=None, primary_key=True)
   # Coach-listing pages and the cron filter pricing plans by coach_id; index it.
-  coach_id: int = Field(foreign_key="coach.id", ondelete="CASCADE", index=True)
+  # SET NULL (was CASCADE) so a deleted coach leaves the pricing-plan history
+  # intact — invoices keep resolving and the coach's earnings record survives.
+  coach_id: Optional[int] = Field(default=None, foreign_key="coach.id", ondelete="SET NULL", index=True)
   payment_interval: PricingInterval
   price_cents: int
   open_to_entry: bool = Field(default=True)
@@ -109,8 +111,9 @@ class Subscription(SQLModelLU, table=True):
   __tablename__ = "subscription"  # type: ignore
   id: Optional[int] = Field(default=None, primary_key=True)
   # The cron job filters active subs by client_id; the client invoice page
-  # joins through here too.
-  client_id: int = Field(foreign_key="client.id", ondelete="CASCADE", index=True)
+  # joins through here too. SET NULL so a deleted client doesn't take the
+  # subscription / billing cycle / invoice chain with them.
+  client_id: Optional[int] = Field(default=None, foreign_key="client.id", ondelete="SET NULL", index=True)
   pricing_plan_id: Optional[int] = Field(default=None, foreign_key="pricing_plan.id", ondelete="SET NULL", index=True)
 
   status: SubscriptionStatus = Field(default=SubscriptionStatus.ACTIVE)
