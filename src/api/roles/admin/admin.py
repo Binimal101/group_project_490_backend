@@ -454,6 +454,16 @@ def resolve_coach_request(
     db.flush()
     # Update the request with the resolution id
     req.role_promotion_resolution_id = resolution.id
+
+    n = Notification(
+        recipient_id=account.id,
+        title="Coach Request Resolved",
+        body=f"Your coach request has been {'approved' if payload.is_approved else 'denied'}.",
+        type="coach_request_resolved"
+    )
+    
+    db.add(n)   
+
     db.add(req)
 
     # If approved, mark the coach as verified
